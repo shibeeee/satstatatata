@@ -517,6 +517,8 @@
           ${q.section === 'math' ? '<a class="btn sm" href="https://www.desmos.com/calculator" target="_blank" rel="noopener">Desmos</a>' : ''}
           <button class="btn sm primary" data-act="submit">Submit</button>
         </div>
+        ${ex.confirm ? `<div class="card row" style="margin-bottom:16px"><span>You have ${ex.confirm} unanswered question${ex.confirm === 1 ? '' : 's'}. Submit anyway?</span><span class="spacer"></span>
+          <button class="btn sm" data-act="cancel-submit">Keep working</button><button class="btn sm primary" data-act="submit">Submit now</button></div>` : ''}
         <div class="card">
           ${questionHTML(q, { resp: ex.resp[ex.i], revealed: false })}
           <div class="q-actions">
@@ -567,8 +569,9 @@
       if (act === 'flag') { ex.flags.has(ex.i) ? ex.flags.delete(ex.i) : ex.flags.add(ex.i); drawRunning(); }
       if (act === 'submit') {
         const blank = ex.resp.filter(r => r === null || r === '').length;
-        if (!blank || confirm(`You have ${blank} unanswered question${blank === 1 ? '' : 's'}. Submit anyway?`)) finish();
+        if (blank && !ex.confirm) { ex.confirm = blank; drawRunning(); } else finish();
       }
+      if (act === 'cancel-submit') { ex.confirm = 0; drawRunning(); }
       if (act === 'again') { phase = 'setup'; ex = null; drawSetup(); }
     });
 
@@ -780,6 +783,7 @@
           <span class="spacer"></span>
           <button class="btn danger" id="reset">Reset everything</button>
         </div>
+        <p class="small" id="data-msg" style="color:var(--bad)"></p>
       </div>`;
 
     $('#profile', el).addEventListener('submit', e => {
@@ -814,12 +818,16 @@
         save();
         render();
       } catch {
-        alert('That file doesn\'t look like a SatStat export.');
+        $('#data-msg', el).textContent = 'That file doesn\'t look like a SatStat export.';
       }
     });
 
-    $('#reset', el).addEventListener('click', () => {
-      if (!confirm('Delete all your progress in this browser? This cannot be undone.')) return;
+    $('#reset', el).addEventListener('click', e => {
+      if (!e.target.dataset.armed) {
+        e.target.dataset.armed = '1';
+        e.target.textContent = 'Click again to delete all progress';
+        return;
+      }
       state = defaults();
       save();
       render();
@@ -832,10 +840,19 @@
   const app = $('#app');
   const main = $('#main');
   let cleanup = null;
+  // Kept in a variable rather than read from location.hash, so navigation still
+  // works where the page runs in a frame that doesn't expose its hash.
+  let route = location.hash;
+
+  function go(href) {
+    route = href;
+    try { history.pushState(null, '', href); } catch { /* ignore */ }
+    render();
+  }
 
   function render() {
     if (cleanup) { cleanup(); cleanup = null; }
-    const [path, qs] = location.hash.replace(/^#\/?/, '').split('?');
+    const [path, qs] = route.replace(/^#\/?/, '').split('?');
     const name = routes[path] ? path : 'home';
     document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
     // A fresh container per render drops the previous view's listeners.
@@ -854,6 +871,12 @@
   $('#menu').addEventListener('click', () => app.classList.add('drawer'));
   $('#scrim').addEventListener('click', () => app.classList.remove('drawer'));
 
-  window.addEventListener('hashchange', render);
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[href^="#/"]');
+    if (!a || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    go(a.getAttribute('href'));
+  });
+  window.addEventListener('popstate', () => { route = location.hash; render(); });
   render();
 })();
