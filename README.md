@@ -5,8 +5,10 @@ A free SAT prep dashboard. No accounts, no paywall, no backend: it is a static s
 ## Features
 
 - **Home dashboard**: predicted score, practice streak, daily goal progress, accuracy, a question of the day, a 16-week activity heatmap and your three weakest domains.
+- **Adaptive test**: answer like a test and see right away if you got it right. SatStat remembers every answer across sessions (a per-domain skill level plus per-skill accuracy), then picks each next question to match: weak domains and skills come up more, difficulty follows your level, a miss brings a follow-up on the same skill two questions later, and old mistakes come back for review. A live panel shows your levels moving, and the end screen shows how each one changed.
+- **Unlimited AI questions**: on the claude.ai version, Claude writes each question on the spot for the exact skill and difficulty the adaptive engine picks (in Adaptive test and Practice). It runs on each student's own Claude account, asks permission once, and solves each question before writing the answer key. The page then checks the format and shuffles the choices. "Report a problem" removes a bad question from your stats. Anywhere Claude isn't available (GitHub Pages, or if a student declines), SatStat uses the built-in bank instead.
 - **Practice**: original SAT-style questions covering all 8 digital SAT domains, filterable by section, domain, difficulty, "not yet answered", "last answer wrong" and "flagged". Instant explanations. Supports multiple choice and student-produced (grid-in) answers, including fractions like `15/2`.
-- **Mock exams**: timed at real SAT pacing (R&W ≈ 71 s per question, Math ≈ 95 s), with a question navigator, mark-for-review, a Desmos link for math, a score estimate and a full answer review. Past results are kept.
+- **Mock exams** (built-in bank): mini or full-module length, timed at real SAT pacing (R&W ≈ 71 s per question, Math ≈ 95 s), with a question navigator, mark-for-review, a Desmos link for math, a score estimate and a full answer review. Past results are kept.
 - **Vocab**: 62 high-value SAT words as flashcards you sort into "learning" and "mastered".
 - **Diagnostics**: accuracy by section, domain and difficulty, plus recent mistakes with one-click retry.
 - **Schedule**: a daily checklist and a 7-day plan that adapt to your weakest domains and to how close your test date is.
@@ -38,8 +40,10 @@ Questions live in `js/questions.js`. Add an object to the array:
   id: 'm-alg-7',                 // unique
   section: 'math',               // 'math' or 'rw'
   domain: 'Algebra',             // one of the 8 domains listed in js/app.js
+  skill: 'Linear functions',     // one of that domain's skills (SKILLS in js/app.js)
   difficulty: 'medium',          // 'easy' | 'medium' | 'hard'
   passage: 'Optional text…',     // shown above the question
+  table: { caption: '…', head: ['…'], rows: [['…']] },   // optional data table
   prompt: 'What is the value of x?',
   choices: ['1', '2', '3', '4'], answer: 2,   // multiple choice (answer is the index)
   // or, for a grid-in: type: 'spr', accept: ['7.5']

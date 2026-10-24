@@ -479,3 +479,63 @@ details.review[open] { padding-bottom: 16px; }
 .week-day:last-child { border-bottom: 0; }
 .week-day .d { width: 64px; flex: none; color: var(--muted); font-size: 13px; font-weight: 600; }
 .week-day.today .d { color: var(--accent); }
+
+/* ---------- Adaptive test & AI questions ---------- */
+
+.chip.ai { background: var(--accent-soft); color: var(--accent); }
+
+.why {
+  display: inline-block;
+  margin-bottom: 12px;
+  padding: 4px 12px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.notice {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--warn-soft);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.ai-line { margin: 18px 0 0; }
+
+.loading { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 64px 16px; color: var(--muted); }
+.spinner {
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--surface-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+.adaptive-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
+.adaptive-layout > .card + .card { margin-top: 0; }
+@media (max-width: 1000px) { .adaptive-layout { grid-template-columns: 1fr; } }
+
+.level { padding: 6px 8px; margin: 0 -8px; border-radius: 8px; }
+.level + .level { margin-top: 4px; }
+.level .row { justify-content: space-between; flex-wrap: nowrap; margin-bottom: 4px; }
+.level .row .small:first-child { min-width: 0; }
+.level.current { background: var(--accent-soft); }
+
+.q-table { margin-bottom: 16px; }
+.q-table table { width: auto; min-width: min(100%, 360px); }
+.q-table caption { text-align: left; font-weight: 600; padding-bottom: 6px; }
+.q-table th { text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--text); background: var(--surface-2); }
+
+details.solution { margin-top: 10px; font-size: 14px; }
+details.solution summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+details.solution div { white-space: pre-line; margin-top: 8px; color: var(--muted); }
+
+.up { color: var(--ok); font-weight: 600; }
+.down { color: var(--bad); font-weight: 600; }
