@@ -22,14 +22,22 @@
     'Problem-Solving & Data Analysis': ['Ratios, rates and proportions', 'Percentages', 'One-variable data', 'Two-variable data', 'Probability', 'Inference from samples', 'Evaluating statistical claims'],
     'Geometry & Trigonometry': ['Area and volume', 'Lines, angles and triangles', 'Right triangles and trigonometry', 'Circles']
   };
+  // Approximate share of each section's questions per domain on the digital SAT.
+  const DOMAIN_SHARE = {
+    'Craft & Structure': 0.28, 'Information & Ideas': 0.26, 'Standard English Conventions': 0.26, 'Expression of Ideas': 0.20,
+    'Algebra': 0.35, 'Advanced Math': 0.35, 'Problem-Solving & Data Analysis': 0.15, 'Geometry & Trigonometry': 0.15
+  };
   const SECTION_OF = Object.fromEntries(ALL_DOMAINS.map(d => [d, DOMAINS.rw.includes(d) ? 'rw' : 'math']));
-  const DIFFS = ['easy', 'medium', 'hard'];
   const DIFF = { easy: -1, medium: 0, hard: 1 };
   const WEIGHT = { easy: 1, medium: 1.5, hard: 2 };
   // Seconds per question on the real digital SAT: R&W 64 min / 54 q, Math 70 min / 44 q.
   const SEC_PER_Q = { rw: 71, math: 95 };
   // Questions per module on the real digital SAT.
   const MODULE_SIZE = { rw: 27, math: 22 };
+  const DAY = 864e5;
+  // After a miss, a similar question comes back 2 questions later, then after these many days.
+  // Getting it right at every step marks the concept mastered.
+  const REVIEW_DAYS = [1, 3, 7];
 
   // ---------- Storage ----------
 
@@ -44,6 +52,7 @@
     daily: null,          // { day, resp }
     generated: {},        // id -> AI-written question
     aiTopics: [],         // recent AI question topics, to keep them varied
+    mistakes: {},         // id of a missed question -> { d, k, f, stage, misses, due, last, mastered }
     adaptive: null,       // the adaptive session in progress
     adaptiveHistory: []   // { t, section, correct, total }
   });
@@ -60,9 +69,9 @@
 
   let state = load();
 
-  // Drops the oldest saved AI questions beyond `keep`, never ones flagged for review.
+  // Drops the oldest saved AI questions beyond `keep`, never ones flagged or still in the mistake memory.
   function pruneGenerated(keep) {
-    const ids = Object.keys(state.generated).filter(id => !state.review.includes(id));
+    const ids = Object.keys(state.generated).filter(id => !state.review.includes(id) && !(state.mistakes[id] && !state.mistakes[id].mastered));
     for (const id of ids.slice(0, Math.max(0, ids.length - keep))) delete state.generated[id];
   }
 
@@ -98,6 +107,7 @@
   }
   // Rough plain-text version of a formula, for short previews.
   const plain = text => String(text ?? '').replace(MATH_RE, (_, a, b) => (a ?? b).replace(/\\[a-z]+/gi, ' ').replace(/[{}]/g, '').replace(/\s+/g, ' ').trim());
+  const words = text => plain(text).split(/\s+/).filter(Boolean).length;
   const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   const shuffle = arr => {
@@ -125,10 +135,14 @@
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
   const fmtDate = t => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const fmtWhen = t => {
+    const d = Math.round((new Date(dayKey(t) + 'T00:00') - new Date(dayKey() + 'T00:00')) / DAY);
+    return d <= 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
+  };
 
   function daysUntilTest() {
     if (!state.profile.testDate) return null;
-    return Math.round((new Date(state.profile.testDate + 'T00:00') - new Date(dayKey() + 'T00:00')) / 864e5);
+    return Math.round((new Date(state.profile.testDate + 'T00:00') - new Date(dayKey() + 'T00:00')) / DAY);
   }
 
   const getQ = id => bankById[id] || state.generated[id];
@@ -141,10 +155,39 @@
     return q ? { s: q.section, d: q.domain, k: q.skill, f: q.difficulty } : null;
   }
 
-  function record(q, ok, mode) {
-    state.attempts.push({ id: q.id, ok, t: Date.now(), m: mode, s: q.section, d: q.domain, k: q.skill, f: q.difficulty });
+  // Records an answer and updates the mistake memory. `origin` is the missed question a
+  // similar question was written for. Returns what's needed to undo it if the question is reported.
+  function record(q, ok, mode, origin) {
+    const id = origin || q.id;
+    const prev = state.mistakes[id] ? { ...state.mistakes[id] } : null;
+    const now = Date.now();
+    state.attempts.push({ id: q.id, ok, t: now, m: mode, s: q.section, d: q.domain, k: q.skill, f: q.difficulty });
+    if (!ok) {
+      state.mistakes[id] = { d: q.domain, k: q.skill, f: q.difficulty, stage: 0, misses: (prev?.misses || 0) + 1, due: now + DAY, last: now };
+    } else if (prev && !prev.mastered && (origin || prev.due <= now)) {
+      // Right on a reinforcement or a due review: space the next one further out.
+      const stage = prev.stage + 1;
+      state.mistakes[id] = stage > REVIEW_DAYS.length
+        ? { ...prev, stage, last: now, mastered: true, due: null }
+        : { ...prev, stage, last: now, due: now + REVIEW_DAYS[stage - 1] * DAY };
+    }
+    save();
+    return { id, prev };
+  }
+
+  function undoRecord(qid, undo) {
+    for (let i = state.attempts.length - 1; i >= 0; i--) {
+      if (state.attempts[i].id === qid) { state.attempts.splice(i, 1); break; }
+    }
+    if (undo) {
+      if (undo.prev) state.mistakes[undo.id] = undo.prev; else delete state.mistakes[undo.id];
+    }
     save();
   }
+
+  const dueMistakes = () => Object.entries(state.mistakes)
+    .filter(([, m]) => !m.mastered && m.due <= Date.now())
+    .sort((a, b) => a[1].due - b[1].due);
 
   function toNum(s) {
     s = String(s ?? '').replace(/\s+/g, '').replace(/−/g, '-');
@@ -183,7 +226,7 @@
     if (a.length < 5) return null;
     let w = 0, s = 0;
     for (const x of a) {
-      const k = WEIGHT[meta(x).f];
+      const k = WEIGHT[meta(x).f] || 1;
       w += k;
       if (x.ok) s += k;
     }
@@ -214,7 +257,7 @@
     const r = Object.fromEntries(ALL_DOMAINS.map(d => [d, 0]));
     for (const x of state.attempts) {
       const m = meta(x);
-      if (!m || !(m.d in r)) continue;
+      if (!m || !(m.d in r) || !(m.f in DIFF)) continue;
       const p = 1 / (1 + Math.exp(-1.5 * (r[m.d] - DIFF[m.f])));
       r[m.d] = Math.max(-2, Math.min(2, r[m.d] + 0.4 * ((x.ok ? 1 : 0) - p)));
     }
@@ -222,6 +265,11 @@
   }
   // Chance of answering a medium question correctly.
   const mastery = r => 1 / (1 + Math.exp(-1.5 * r));
+  // A higher target score pushes questions harder sooner: 1500+ scores are won on hard questions.
+  const stretch = () => {
+    const t = state.profile.targetScore || 1400;
+    return t >= 1500 ? 0.5 : t >= 1350 ? 0.25 : 0;
+  };
   const levelFor = r => {
     const x = r + (Math.random() - 0.5) * 0.8;
     return x < -0.45 ? 'easy' : x > 0.45 ? 'hard' : 'medium';
@@ -258,13 +306,13 @@
   };
 
   // Picks the best bank question for a target skill and difficulty:
-  // never-seen and previously-missed questions first, recent correct ones last.
+  // never-seen and previously-missed questions first, ones you got right last.
   function bankPick(t, used = new Set()) {
     const last = lastResults();
     let pool = BANK.filter(q => q.skill === t.skill && !used.has(q.id));
     if (!pool.length) pool = BANK.filter(q => q.domain === t.domain && !used.has(q.id));
     if (!pool.length) return null;
-    const scored = pool.map(q => [q, -Math.abs(DIFF[q.difficulty] - DIFF[t.difficulty]) * 1.5 +
+    const scored = pool.map(q => [q, -Math.abs(DIFF[q.difficulty] - DIFF[t.difficulty || 'medium']) * 1.5 +
       (q.id in last ? (last[q.id] ? -2.5 : 1.6) : 1.5) + Math.random() * 0.6]);
     return scored.reduce((a, b) => (b[1] > a[1] ? b : a))[0];
   }
@@ -287,62 +335,75 @@
     return {
       not_granted: 'Claude access was declined, so questions come from the built-in bank.',
       rate_limited: 'Claude is busy or you reached a usage limit. Using the built-in bank for a minute.',
-      session_expired: 'Your Claude sign-in expired. Using the built-in bank.',
-      invalid_question: 'Claude\'s question didn\'t pass the quality check, so this one is from the built-in bank.',
-      invalid_json: 'Claude\'s question didn\'t pass the quality check, so this one is from the built-in bank.'
-    }[code] || 'Couldn\'t reach Claude, so this one is from the built-in bank.';
+      session_expired: 'Your Claude sign-in expired. Using the built-in bank.'
+    }[code] || '';
   }
 
-  const SKILL_GUIDE = {
-    'Words in context': 'A passage of 1–3 sentences (25–70 words) with one blank written as ______. The four choices are single words or short phrases of the same part of speech. Prompt: "Which choice completes the text with the most logical and precise word or phrase?"',
-    'Text structure and purpose': 'A passage of 60–150 words (science, history, social science, the arts, or a literary excerpt you write yourself). Ask for the main purpose of the text, its overall structure, or the function of one sentence that you quote in the prompt. The choices are full sentences.',
-    'Cross-text connections': 'Two short texts in the passage, labeled "Text 1" and "Text 2" on their own lines (40–90 words each), taking different positions on one topic. Ask how the author of one text would most likely respond to a specific claim in the other. The choices are full sentences.',
-    'Central ideas and details': 'A passage of 60–150 words. Ask for the main idea ("Which choice best states the main idea of the text?") or a detail stated in it ("According to the text, ..."). The choices are full sentences.',
-    'Command of evidence: textual': 'A passage presenting a claim or hypothesis. Ask which finding, if true, would most directly support or weaken it, or which quotation best illustrates a claim about a literary work you describe. The choices are full sentences.',
-    'Command of evidence: quantitative': 'A short passage that refers to a data table, plus the table itself in the "table" field (2–4 columns, 3–6 rows, realistic made-up data with a clear caption). Ask which choice uses data from the table to complete or support a claim. Exactly one choice is both accurate to the table and relevant to the claim; include a choice that is accurate but irrelevant.',
-    'Inferences': 'A passage of 60–150 words ending with a blank ______. Prompt: "Which choice most logically completes the text?" The choices are clauses that complete the final sentence.',
-    'Boundaries': 'One or two sentences with a blank ______ at a punctuation boundary. The choices are the same words with different punctuation (commas, semicolons, colons, dashes or periods). Prompt: "Which choice completes the text so that it conforms to the conventions of Standard English?"',
-    'Form, structure and sense': 'One or two sentences with a blank ______ testing subject-verb agreement, pronoun agreement, verb tense or form, plural versus possessive nouns, or modifier placement. Prompt: "Which choice completes the text so that it conforms to the conventions of Standard English?"',
-    'Transitions': 'A passage of 2–4 sentences with a blank ______ at the start of a sentence. The choices are four transition words or phrases, each ending in a comma, and only one fits the logic. Prompt: "Which choice completes the text with the most logical transition?"',
-    'Rhetorical synthesis': 'The passage is "While researching a topic, a student has taken the following notes:" followed by 4–6 notes, each on its own line starting with "• ". The prompt states the student\'s specific goal and asks "Which choice most effectively uses relevant information from the notes to accomplish this goal?" All four choices are accurate to the notes, but only one achieves the goal.'
+  // The official question wording for skills whose stem never changes on the test.
+  const FIXED_STEMS = {
+    'Words in context': 'Which choice completes the text with the most logical and precise word or phrase?',
+    'Boundaries': 'Which choice completes the text so that it conforms to the conventions of Standard English?',
+    'Form, structure and sense': 'Which choice completes the text so that it conforms to the conventions of Standard English?',
+    'Transitions': 'Which choice completes the text with the most logical transition?',
+    'Inferences': 'Which choice most logically completes the text?'
   };
-  const MATH_GUIDE = 'A math question testing this skill, with a realistic context or a pure math setup. Leave "passage" empty unless a short context paragraph is needed. Use the "table" field for data tables. A graphing calculator is allowed on the real test.';
+  const SKILL_GUIDE = {
+    'Words in context': 'A passage of 1–3 sentences (25–70 words) with one blank written as ______. The four choices are single words or short phrases of the same part of speech.',
+    'Text structure and purpose': 'A passage of 60–150 words (science, history, social science, the arts, or a literary excerpt you write yourself). Ask "Which choice best states the main purpose of the text?", "Which choice best describes the overall structure of the text?", or "Which choice best describes the function of the [ordinal] sentence in the overall structure of the text?". The choices are full sentences.',
+    'Cross-text connections': 'Two short texts in the passage, labeled "Text 1" and "Text 2" on their own lines (40–90 words each), taking different positions on one topic. Ask "Based on the texts, how would the author of Text 2 most likely respond to [a specific claim] in Text 1?" or a close variant. The choices are full sentences.',
+    'Central ideas and details': 'A passage of 60–150 words. Ask "Which choice best states the main idea of the text?" or "According to the text, ...". The choices are full sentences.',
+    'Command of evidence: textual': 'A passage of 60–150 words presenting a claim or hypothesis. Ask "Which finding, if true, would most directly support [weaken] the [researcher\'s] claim?" or "Which quotation from [a literary work] most effectively illustrates the claim?". The choices are full sentences or quotations.',
+    'Command of evidence: quantitative': 'A passage of 50–120 words that refers to a data table, plus the table itself in the "table" field (2–4 columns, 3–6 rows, realistic made-up data with a clear caption). Ask "Which choice most effectively uses data from the table to complete the [example / statement / claim]?" with the passage ending in a blank ______, or "Which choice best describes data from the table that support the claim?". Exactly one choice is both accurate to the table and relevant to the claim; include a choice that is accurate but irrelevant.',
+    'Inferences': 'A passage of 60–150 words whose final sentence ends with a blank ______. The choices are clauses that complete that sentence.',
+    'Boundaries': 'One or two sentences (20–60 words) with a blank ______ at a punctuation boundary. The choices are the same words with different punctuation (commas, semicolons, colons, dashes or periods).',
+    'Form, structure and sense': 'One or two sentences (20–60 words) with a blank ______ testing subject-verb agreement, pronoun agreement, verb tense or form, plural versus possessive nouns, or modifier placement.',
+    'Transitions': 'A passage of 2–4 sentences (30–90 words) with a blank ______ at the start of a sentence. The choices are four transition words or phrases, each ending in a comma, and only one fits the logic.',
+    'Rhetorical synthesis': 'The passage is "While researching a topic, a student has taken the following notes:" followed by 4–6 notes, each on its own line starting with "• ". The prompt is "The student wants to [specific goal]. Which choice most effectively uses relevant information from the notes to accomplish this goal?" All four choices are accurate to the notes, but only one achieves the goal.'
+  };
+  const MATH_GUIDE = 'A math question testing this skill, written like a real SAT stem: 1–3 sentences, with a realistic context only if it adds something. Leave "passage" empty unless a short context paragraph is needed. Use the "table" field for data tables. A graphing calculator is allowed on the real test.';
   const DIFF_GUIDE = {
     easy: 'Routine: one or two steps; most students get it right.',
     medium: 'Two or three steps or one common trap; about half of students get it right.',
-    hard: 'Among the hardest on the test: multi-step reasoning, subtle wording or an unusual setup, with wrong choices built from common mistakes.'
+    hard: 'As hard as the hardest questions in the second, harder module of the real test: multi-step reasoning, subtle wording or an unusual setup, with every wrong choice built from a specific common mistake.'
   };
+  const compactQ = q => ({
+    passage: q.passage || '', table: q.table || null, prompt: q.prompt,
+    ...(q.type === 'spr' ? { type: 'spr', accept: q.accept } : { choices: q.choices, answer: q.answer }),
+    explanation: q.explanation
+  });
 
   function buildPrompt(t, format) {
     const section = SECTION_OF[t.domain];
-    const examples = shuffle(BANK.filter(q => q.skill === t.skill)).slice(0, 2).map(q => JSON.stringify({
-      passage: q.passage || '', table: q.table || null, prompt: q.prompt,
-      ...(q.type === 'spr' ? { type: 'spr', accept: q.accept } : { choices: q.choices, answer: q.answer }),
-      explanation: q.explanation
-    }));
+    const examples = t.ref ? [] : shuffle(BANK.filter(q => q.skill === t.skill)).slice(0, 2).map(q => JSON.stringify(compactQ(q)));
     const shape = format === 'spr'
-      ? '{"topic": "2–5 word topic label", "passage": "" or text, "table": null or {"caption": "...", "head": ["..."], "rows": [["..."]]}, "prompt": "...", "solution": "your full step-by-step solution", "type": "spr", "accept": ["the answer as a number, e.g. 7.5", "any equivalent form, e.g. 15/2"], "explanation": "1–4 sentences"}'
-      : '{"topic": "2–5 word topic label", "passage": "" or text, "table": null or {"caption": "...", "head": ["..."], "rows": [["..."]]}, "prompt": "...", "solution": "your full step-by-step solution", "choices": ["...", "...", "...", "..."], "answer": index 0-3 of the correct choice, "explanation": "1–4 sentences on why the answer is right and what makes the main trap wrong"}';
+      ? '{"topic": "2–5 word topic label", "passage": "" or text, "table": null or {"caption": "...", "head": ["..."], "rows": [["..."]]}, "prompt": "...", "solution": "your full step-by-step solution", "type": "spr", "accept": ["the answer as a number, e.g. 7.5", "any equivalent form, e.g. 15/2"], "explanation": "1–3 sentences"}'
+      : '{"topic": "2–5 word topic label", "passage": "" or text, "table": null or {"caption": "...", "head": ["..."], "rows": [["..."]]}, "prompt": "...", "solution": "your full step-by-step solution", "choices": ["...", "...", "...", "..."], "answer": index 0-3 of the correct choice, "why": ["one sentence on why the first choice is right or wrong", "... second", "... third", "... fourth"], "explanation": "1–3 sentences on the key idea and the main trap"}';
     return [
-      `Write ONE original practice question for the digital SAT, ${SECTIONS[section]} section.`,
+      `Write ONE question for the digital SAT, ${SECTIONS[section]} section, exactly as it would appear on the real test.`,
       `Domain: ${t.domain}`,
       `Skill: ${t.skill}`,
-      `Difficulty: ${t.difficulty}. ${DIFF_GUIDE[t.difficulty]}`,
+      `Difficulty: ${t.difficulty}. ${DIFF_GUIDE[t.difficulty] || DIFF_GUIDE.medium}`,
       `Format: ${SKILL_GUIDE[t.skill] || MATH_GUIDE}`,
+      FIXED_STEMS[t.skill] ? `The prompt must be exactly: "${FIXED_STEMS[t.skill]}"` : '',
       section === 'math'
         ? (format === 'spr'
           ? 'This is a student-produced response question: no answer choices, and the answer is a single number (integer, decimal or fraction).'
           : 'This is a multiple-choice question with exactly 4 choices.')
-        : '',
+        : 'One passage and one question, as on the real test.',
+      t.ref ? [
+        '',
+        'The student just got the question below wrong. Write a NEW question that tests the same specific concept and the same trap at the same difficulty, so they practice exactly what they missed. Change the context, names and numbers; do not reuse its wording or answers.',
+        'The missed question: ' + JSON.stringify(compactQ(t.ref))
+      ].join('\n') : '',
       '',
       'Rules:',
-      '- Match the style, length and rigor of real digital SAT questions, but write entirely new content. Never copy real SAT or College Board questions.',
+      '- Only content that appears on the real SAT: the passage (if any), the question stem and the choices. The prompt is the question stem alone: no notes, hints, tips, caveats or instructions about how to answer.',
+      '- Write entirely new content. Never copy real SAT or College Board questions.',
       '- Facts about real people, places, events and science must be accurate. If you are not certain of a fact, use a generic or clearly fictional subject instead (for example "a team of researchers").',
-      '- Exactly one answer is correct. Wrong choices must be tempting (common mistakes, misreadings) but clearly wrong on careful reading.',
+      '- Exactly one answer is correct. Each wrong choice must be tempting for a specific reason (a common mistake or misreading) but clearly wrong on careful reading.',
       '- No Markdown. Write ALL math (variables, expressions, equations, fractions, roots, exponents, angles) in LaTeX: inline between \\( and \\), and an equation or system shown on its own line between \\[ and \\] (use \\begin{aligned} ... \\end{aligned} for a system). Example shape: "\\[ equation \\]What is the value of \\(x\\)?" Never use $ for math; dollar amounts are plain text like $40.',
       '- This is JSON, so write every backslash twice: "\\\\(\\\\frac{3}{4}x\\\\)", "\\\\[x^2 - 5 = 0\\\\]".',
-      '- The prompt is a clean question exactly as it would appear on the test: no notes, hints, caveats or instructions about how to answer.',
-      '- The choices will be shuffled, so the explanation must refer to choices by their content, never by letter.',
+      '- The explanation and the "why" lines must refer to choices by their content, never by letter, because choices get reordered.',
       `- Choose a topic different from these recent ones: ${state.aiTopics.slice(-25).join('; ') || 'none yet'}.`,
       '- Work out "solution" before "answer", then check that exactly one choice is correct. If not, fix the question before replying.',
       '',
@@ -350,7 +411,7 @@
       '',
       'Reply with only one JSON object of this shape:',
       shape
-    ].filter(line => line !== null).join('\n');
+    ].join('\n');
   }
 
   // A LaTeX command written with a single backslash in JSON turns into a control
@@ -386,20 +447,48 @@
     return true;
   }
 
+  // The number a math choice stands for (3, -1.5, \frac{4}{3}, $34), or NaN.
+  function choiceValue(c) {
+    let s = c.trim();
+    const m = /^\\\((.*)\\\)$/s.exec(s);
+    if (m) s = m[1].trim();
+    s = s.replace(/^\\?\$/, '').replace(/\{,\}|,/g, '').replace(/\\(?:d|t)?frac/, '\\frac');
+    const f = /^(-)?\\frac\{(-?\d*\.?\d+)\}\{(\d*\.?\d+)\}$/.exec(s);
+    if (f) return (f[1] ? -1 : 1) * Number(f[2]) / Number(f[3]);
+    return /^-?\d*\.?\d+$/.test(s) ? Number(s) : NaN;
+  }
+
+  // Text that never appears in a real SAT question.
+  const META_RE = /\b(note|hint|tip|remember|reminder)\s*:|\((?:note|hint)\b|extraneous solutions? (?:arise|exist|occur)|round your answer|enter your answer|show your work/i;
+
   function validateAI(r, t, format) {
     if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
     r = fixAll(r);
+    const section = SECTION_OF[t.domain];
     const str = (v, max) => (typeof v === 'string' && v.trim() && v.length <= max ? v.trim() : null);
-    const prompt = str(r.prompt, 1500);
-    const explanation = str(r.explanation, 2000);
+    let prompt = str(r.prompt, 1200);
+    const explanation = str(r.explanation, 1500);
     if (!prompt || !explanation) return null;
+    const passage = typeof r.passage === 'string' ? r.passage.trim() : '';
+    if (META_RE.test(prompt) || META_RE.test(passage)) return null;
+    if (section === 'rw') {
+      // One passage of real-test length and a one-line question.
+      const limit = t.skill === 'Cross-text connections' ? 230 : t.skill === 'Rhetorical synthesis' ? 200 : 170;
+      if (!passage || words(passage) > limit || words(prompt) > 60) return null;
+      if (FIXED_STEMS[t.skill]) {
+        if (!passage.includes('___')) return null;
+        prompt = FIXED_STEMS[t.skill];
+      }
+      if (t.skill === 'Rhetorical synthesis' && !passage.includes('•')) return null;
+    } else if (words(prompt) + words(passage) > 140) {
+      return null;
+    }
     const q = {
       id: 'ai-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      source: 'ai', section: SECTION_OF[t.domain], domain: t.domain, skill: t.skill, difficulty: t.difficulty,
-      passage: typeof r.passage === 'string' ? r.passage.trim().slice(0, 3000) : '',
-      prompt, explanation,
+      source: 'ai', section, domain: t.domain, skill: t.skill, difficulty: t.difficulty || 'medium',
+      passage, prompt, explanation,
       topic: str(r.topic, 80) || t.skill,
-      solution: typeof r.solution === 'string' ? r.solution.trim().slice(0, 4000) : ''
+      solution: typeof r.solution === 'string' ? r.solution.trim().slice(0, 3000) : ''
     };
     const tb = r.table;
     if (tb && Array.isArray(tb.head) && Array.isArray(tb.rows) && tb.head.length && tb.rows.length && tb.rows.length <= 12 &&
@@ -418,17 +507,23 @@
       const ans = letter ? 'ABCD'.indexOf(letter[1].toUpperCase()) : Number(r.answer);
       if (choices.length !== 4 || choices.some(c => !c || c.length > 700) || new Set(choices).size !== 4 ||
           !Number.isInteger(ans) || ans < 0 || ans > 3) return null;
-      const order = shuffle([0, 1, 2, 3]);
+      const why = Array.isArray(r.why) && r.why.length === 4 && r.why.every(w => typeof w === 'string' && w.trim() && w.length <= 400) ? r.why.map(w => w.trim()) : null;
+      // Numeric choices go smallest to largest, as on the SAT; others are shuffled.
+      const values = choices.map(choiceValue);
+      const order = values.every(v => !isNaN(v)) ? [0, 1, 2, 3].sort((a, b) => values[a] - values[b]) : shuffle([0, 1, 2, 3]);
       q.choices = order.map(i => choices[i]);
       q.answer = order.indexOf(ans);
+      if (why) q.why = order.map(i => why[i]);
     }
-    const texts = [q.passage, q.prompt, q.explanation, q.solution, ...(q.choices || []), ...(q.table ? [q.table.caption, ...q.table.head, ...q.table.rows.flat()] : [])];
+    const texts = [q.passage, q.prompt, q.explanation, q.solution, ...(q.choices || []), ...(q.why || []),
+      ...(q.table ? [q.table.caption, ...q.table.head, ...q.table.rows.flat()] : [])];
     if (!texts.every(mathOK)) return null;
     return q;
   }
 
   async function generate(t, signal) {
-    const format = SECTION_OF[t.domain] === 'math' && Math.random() < 0.25 ? 'spr' : 'mc';
+    const format = t.ref ? (t.ref.type === 'spr' ? 'spr' : 'mc')
+      : SECTION_OF[t.domain] === 'math' && Math.random() < 0.25 ? 'spr' : 'mc';
     let raw;
     try {
       raw = await ai.fn.json(buildPrompt(t, format), { signal, cache: false, modelTier: 'default', effort: 'low' });
@@ -445,24 +540,37 @@
     return q;
   }
 
-  // ---------- Question rendering ----------
+  // ---------- Question rendering & interaction ----------
 
-  function questionHTML(q, st) {
-    const chips = `<div class="chips"><span class="chip">${SECTIONS[q.section]}</span><span class="chip" title="${esc(q.domain)}">${esc(q.skill || q.domain)}</span><span class="chip diff-${q.difficulty}">${q.difficulty}</span>${q.source === 'ai' ? '<span class="chip ai">Written by Claude</span>' : ''}</div>`;
+  const FLAG_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V4h11l-1.5 4L16 12H5"/></svg>';
+
+  // Renders a question the way the test lays it out. `st` is { resp, revealed, elim }.
+  // Options: num (question number for the header), flag (true/false shows the review marker).
+  function questionHTML(q, st, o = {}) {
+    const elim = st.elim || [];
+    const head = `<header class="q-head">
+      ${o.num != null ? `<span class="q-num">${o.num}</span>` : ''}
+      ${o.flag != null ? `<button class="mark ${o.flag ? 'on' : ''}" data-act="flag" aria-pressed="${!!o.flag}">${FLAG_SVG}<span>${o.flag ? 'Marked for review' : 'Mark for review'}</span></button>` : ''}
+      <span class="spacer"></span>
+      <span class="q-meta">${esc(q.skill || q.domain)} · ${esc(q.difficulty[0].toUpperCase() + q.difficulty.slice(1))}</span>
+    </header>`;
     const passage = q.passage ? `<div class="passage">${rich(q.passage)}</div>` : '';
     const table = q.table ? `<div class="table-wrap q-table"><table>${q.table.caption ? `<caption>${rich(q.table.caption)}</caption>` : ''}<thead><tr>${q.table.head.map(h => `<th>${rich(h)}</th>`).join('')}</tr></thead><tbody>${q.table.rows.map(r => `<tr>${r.map(c => `<td>${rich(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '';
-    let body;
+    let answer;
     if (q.type === 'spr') {
-      body = `<div class="spr"><input class="input" data-spr value="${esc(st.resp ?? '')}" ${st.revealed ? 'disabled' : ''} placeholder="Type your answer, e.g. 7.5 or 15/2" autocomplete="off" aria-label="Your answer"></div>`;
+      answer = `<div class="spr"><input class="input" data-spr value="${esc(st.resp ?? '')}" ${st.revealed ? 'disabled' : ''} placeholder="Your answer, e.g. 7.5 or 15/2" autocomplete="off" inputmode="decimal" aria-label="Your answer"></div>`;
     } else {
-      body = '<div class="choices">' + q.choices.map((c, i) => {
-        let cls = 'choice';
+      answer = '<div class="choices">' + q.choices.map((c, i) => {
+        const L = 'ABCD'[i];
+        let cls = 'choice-row';
         if (st.resp === i) cls += ' selected';
-        if (st.revealed) {
-          if (i === q.answer) cls += ' correct';
-          else if (st.resp === i) cls += ' wrong';
-        }
-        return `<button class="${cls}" data-choice="${i}" ${st.revealed ? 'disabled' : ''}><span class="letter">${'ABCD'[i]}</span><span>${rich(c, true)}</span></button>`;
+        if (!st.revealed && elim.includes(i)) cls += ' out';
+        if (st.revealed) cls += i === q.answer ? ' correct' : st.resp === i ? ' wrong' : ' dim';
+        return `<div class="${cls}">
+          <button class="choice" data-choice="${i}" ${st.revealed ? 'disabled' : ''} aria-label="Choice ${L}"><span class="letter">${L}</span><span class="choice-text">${rich(c, true)}</span></button>
+          ${st.revealed ? '' : `<button class="elim" data-elim="${i}" title="Cross out ${L}" aria-label="Cross out choice ${L}"><s>${L}</s></button>`}
+          ${st.revealed && q.why ? `<div class="why-line">${rich(q.why[i])}</div>` : ''}
+        </div>`;
       }).join('') + '</div>';
     }
     let fb = '';
@@ -472,10 +580,69 @@
       fb = `<div class="feedback ${ok ? 'ok' : 'bad'}"><strong>${ok ? 'Correct.' : answered(st.resp) ? 'Not quite.' : 'Not answered.'}</strong> ${ans}${rich(q.explanation)}</div>` +
         (q.solution ? `<details class="solution"><summary>Full worked solution</summary><div>${rich(q.solution)}</div></details>` : '');
     }
-    return `<article class="question">${chips}${passage}${table}<div class="prompt">${rich(q.prompt)}</div>${body}${fb}</article>`;
+    const stem = `<div class="prompt">${rich(q.prompt)}</div>`;
+    const split = q.section === 'rw' && (q.passage || q.table);
+    const body = split
+      ? `<div class="q-body split"><div class="q-left">${passage}${table}</div><div class="q-right">${stem}${answer}${fb}</div></div>`
+      : `<div class="q-body"><div class="q-single">${passage}${table}${stem}${answer}${fb}</div></div>`;
+    return `<article class="question">${head}${body}</article>`;
+  }
+
+  // Selecting and crossing out choices, shared by every view that shows a question.
+  // Updates `st` and repaints in place; returns true if the click was a choice action.
+  function choiceClick(e, st, root) {
+    if (!st || st.revealed) return false;
+    const x = e.target.closest('[data-elim]');
+    const c = !x && e.target.closest('[data-choice]');
+    if (!x && !c) return false;
+    const i = Number((x || c).dataset[x ? 'elim' : 'choice']);
+    const elim = st.elim || [];
+    if (x) {
+      st.elim = elim.includes(i) ? elim.filter(j => j !== i) : [...elim, i];
+      if (st.resp === i) st.resp = null;
+    } else {
+      st.resp = i;
+      st.elim = elim.filter(j => j !== i);
+    }
+    paintChoices(root, st);
+    return true;
+  }
+
+  function paintChoices(root, st) {
+    root.querySelectorAll('.choice-row').forEach((row, i) => {
+      row.classList.toggle('selected', st.resp === i);
+      row.classList.toggle('out', (st.elim || []).includes(i));
+    });
+  }
+
+  // Keyboard: A–D or 1–4 choose, Enter checks or moves on. Returns a cleanup function.
+  function keys(h) {
+    const onKey = e => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const typing = e.target.matches('input, select, textarea');
+      if (e.key === 'Enter') {
+        if (typing && !e.target.matches('[data-spr]')) return;
+        e.preventDefault();
+        h.enter();
+        return;
+      }
+      if (typing) return;
+      const k = 'abcd'.indexOf(e.key.toLowerCase()) >= 0 ? 'abcd'.indexOf(e.key.toLowerCase()) : '1234'.indexOf(e.key);
+      if (k >= 0) h.choose(k);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }
+
+  function chooseKey(q, st, root, k) {
+    if (!q || !st || st.revealed || q.type === 'spr') return;
+    st.resp = k;
+    st.elim = (st.elim || []).filter(j => j !== k);
+    paintChoices(root, st);
   }
 
   const loadingHTML = text => `<div class="loading"><span class="spinner" aria-hidden="true"></span><span>${esc(text)}</span></div>`;
+  const desmosLink = '<a class="btn" href="https://www.desmos.com/calculator" target="_blank" rel="noopener">Desmos</a>';
 
   // ---------- Views ----------
 
@@ -491,13 +658,14 @@
     const hour = new Date().getHours();
     const hello = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
     const st = streak();
+    const due = dueMistakes().length;
 
     // Daily question: same for everyone on a given day.
     const dk = dayKey();
     let h = 0;
     for (const c of dk) h = (h * 31 + c.charCodeAt(0)) >>> 0;
     const dq = BANK[h % BANK.length];
-    const daily = state.daily?.day === dk ? { resp: state.daily.resp, revealed: true } : { resp: null, revealed: false };
+    const daily = state.daily?.day === dk ? { resp: state.daily.resp, revealed: true } : { resp: null, revealed: false, elim: [] };
 
     // Activity heatmap: 16 weeks ending this week.
     const counts = {};
@@ -524,15 +692,18 @@
       </div>`;
     }).join('');
 
-    const resume = state.adaptive && state.adaptive.items.length < state.adaptive.length;
+    const resume = state.adaptive && state.adaptive.items.filter(i => !i.void).length < state.adaptive.length;
 
     el.innerHTML = `
       <div class="page-head">
         <div>
           <h1>${hello}${p.name ? ', ' + esc(p.name) : ''}</h1>
-          <p>${days == null ? '<a href="#/settings">Set your test date</a> to get a countdown and study plan.' : days > 0 ? `${plural(days, 'day')} until your SAT.` : days === 0 ? 'Test day. You\'ve got this.' : 'Your test date has passed. <a href="#/settings">Set a new one</a>.'}</p>
+          <p>${days == null ? '<a href="#/settings">Set your test date and target score</a> so practice aims at your goal.' : days > 0 ? `${plural(days, 'day')} until your SAT. Aiming for ${p.targetScore}.` : days === 0 ? 'Test day. You\'ve got this.' : 'Your test date has passed. <a href="#/settings">Set a new one</a>.'}</p>
         </div>
-        <div class="row"><a class="btn" href="#/exams">Mock exam</a><a class="btn primary" href="#/adaptive">${resume ? 'Resume adaptive test' : 'Start adaptive test'}</a></div>
+        <div class="row">
+          ${due ? `<a class="btn" href="#/adaptive?start=review">Review ${plural(due, 'mistake')}</a>` : '<a class="btn" href="#/exams">Mock exam</a>'}
+          <a class="btn primary" href="#/adaptive">${resume ? 'Resume studying' : 'Start studying'}</a>
+        </div>
       </div>
 
       <div class="grid stats">
@@ -551,11 +722,11 @@
           <div class="stat-value">${today}<span class="muted" style="font-size:18px"> / ${goal}</span></div>
           <div class="bar ${today >= goal ? 'ok' : ''}"><span style="width:${Math.min(100, pct(today, goal))}%"></span></div>
         </div>
-        <div class="card">
-          <div class="stat-label">Accuracy</div>
-          <div class="stat-value">${all ? pct(correct, all) + '%' : '—'}</div>
-          <div class="stat-sub">${correct} of ${all} answered correctly</div>
-        </div>
+        <a class="card stat-link" href="#/review">
+          <div class="stat-label">Mistakes to review</div>
+          <div class="stat-value">${due}</div>
+          <div class="stat-sub">${all ? `${pct(correct, all)}% accuracy overall` : 'Missed questions come back here'}</div>
+        </a>
       </div>
 
       <div class="grid two">
@@ -578,107 +749,106 @@
       </div>`;
 
     if (daily.revealed) return;
-    let resp = null;
     const box = $('#daily', el);
     box.addEventListener('click', e => {
-      const c = e.target.closest('[data-choice]');
-      if (c) {
-        resp = Number(c.dataset.choice);
-        box.querySelectorAll('.choice').forEach(b => b.classList.toggle('selected', b === c));
-      }
+      if (choiceClick(e, daily, box)) return;
       if (e.target.id === 'daily-check') {
-        if (dq.type === 'spr') resp = $('[data-spr]', box).value.trim();
-        if (!answered(resp)) return;
-        record(dq, isCorrect(dq, resp), 'daily');
-        state.daily = { day: dk, resp };
+        if (dq.type === 'spr') daily.resp = $('[data-spr]', box).value.trim();
+        if (!answered(daily.resp)) return;
+        record(dq, isCorrect(dq, daily.resp), 'daily');
+        state.daily = { day: dk, resp: daily.resp };
         save();
         render();
       }
     });
   }
 
-  function adaptive(el) {
+  function adaptive(el, params) {
     let s = state.adaptive;
     let opts = { section: 'mix', length: 20 };
-    let cur = null;          // { q, reason }
-    let resp = null, revealed = false;
-    let pending = null;      // promise of the next { q, reason }
+    let cur = null;          // { q, origin, followup }
+    let st = null;           // { resp, revealed, elim }
+    let pending = null;      // promise of the next { q, origin, followup }
     let failure = '';        // shown when no next question could be produced
-    let note = '';           // shown when Claude fell back to the bank
+    let note = '';           // shown when Claude fell back to the bank, or after a report
     let summary = null;
     let started = Date.now();
     const ctls = new Set();
+    const twins = new Map(); // follow-up key -> promise of the similar question written right after a miss
 
-    // Decides what to ask next: a follow-up on a recent miss, a review of an
-    // older miss, or a new question in a domain and skill weighted toward your
-    // weak spots, at a difficulty matched to your current level there.
-    function planNext() {
-      const n = s.items.length;
-      const used = new Set(s.items.map(i => i.id));
-      const domains = s.section === 'mix' ? ALL_DOMAINS : DOMAINS[s.section];
+    const sectionDomains = () => (s.section === 'rw' || s.section === 'math' ? DOMAINS[s.section] : ALL_DOMAINS);
+    const answeredCount = () => s.items.filter(i => !i.void).length;
+    const usedIds = () => new Set([...s.items.map(i => i.id), ...(cur ? [cur.q.id] : [])]);
+
+    function aiCall(t) {
+      const ctl = new AbortController();
+      ctls.add(ctl);
+      const p = generate(t, ctl.signal).finally(() => ctls.delete(ctl));
+      p.catch(() => {});   // a cancelled request nobody waits for is not an error
+      return p;
+    }
+
+    // Chooses what comes at question number `pos`, in this order: a similar question for a miss
+    // from earlier in this session, a mistake from an earlier day that is due again, then a new
+    // question weighted toward the skills worth the most points that you're weakest at.
+    function planNext(pos) {
+      const domains = sectionDomains();
+      const used = usedIds();
       const useAI = aiUsable();
       const ok = d => useAI || BANK.some(q => q.domain === d && !used.has(q.id));
       const ab = abilities();
 
-      const f = s.followups.find(x => x.due <= n && ok(x.domain));
-      if (f) return { followup: f, domain: f.domain, skill: f.skill, difficulty: DIFFS[Math.max(0, DIFFS.indexOf(f.difficulty) - 1)], reason: `Follow-up: another ${f.skill} question after your miss` };
+      const f = s.followups.find(x => x.due <= pos && ok(x.d));
+      if (f) return { followup: f, origin: f.origin, domain: f.d, skill: f.k, difficulty: f.f, ref: getQ(f.ref) };
 
-      if (Math.random() < 0.2) {
-        const last = lastResults();
-        const missed = Object.keys(last).filter(id => last[id] === false && !used.has(id) && getQ(id) && domains.includes(getQ(id).domain));
-        if (missed.length) return { reviewId: missed[Math.floor(Math.random() * missed.length)], reason: 'Review: you got this one wrong before' };
+      const inSession = id => s.items.some(i => i.origin === id || i.id === id) || (cur && (cur.origin === id || cur.q.id === id));
+      const due = dueMistakes().filter(([id, m]) => domains.includes(m.d) && !inSession(id));
+      if (due.length && (s.section === 'review' || pos % 3 === 0 || Math.random() < 0.15)) {
+        const [id, m] = due[0];
+        const orig = getQ(id);
+        // Without Claude, the original question itself comes back once it's due.
+        if (!useAI && orig && !used.has(id)) return { q: orig, origin: id };
+        if (ok(m.d)) return { origin: id, domain: m.d, skill: m.k, difficulty: m.f || 'medium', ref: orig };
       }
+      if (s.section === 'review') return null;
 
       const cands = domains.filter(ok);
       if (!cands.length) return null;
       const recent = s.items.slice(-2).map(i => i.d);
       const domain = weighted(cands, cands.map(d => {
-        let w = 1.2 - mastery(ab[d]);
+        let w = DOMAIN_SHARE[d] * (1.3 - mastery(ab[d]));
         if (recent[recent.length - 1] === d) w *= recent.length === 2 && recent[0] === d ? 0.1 : 0.5;
         return w;
       }));
       const ss = skillStats();
       const skills = SKILLS[domain].filter(k => useAI || BANK.some(q => q.skill === k && !used.has(q.id)));
-      const skill = weighted(skills, skills.map(k => 1.2 - (ss[k]?.n ? ss[k].ok / ss[k].n : 0.5)));
-      const ds = domainStats();
-      const weakest = cands.slice().sort((a, b) => ab[a] - ab[b]).slice(0, 2);
-      const reason = !ds[domain].n ? `Finding your level in ${domain}`
-        : weakest.includes(domain) ? `Targeting a weak spot: ${domain}`
-        : `Keeping ${domain} sharp`;
-      return { domain, skill, difficulty: levelFor(ab[domain]), reason };
+      const skill = weighted(skills, skills.map(k => 1.3 - (ss[k]?.n ? ss[k].ok / ss[k].n : 0.5)));
+      return { domain, skill, difficulty: levelFor(ab[domain] + stretch()) };
     }
 
-    function makeNext(bankOnly = false) {
-      const t = planNext();
-      if (!t) return Promise.resolve(null);
-      if (t.reviewId) return Promise.resolve({ q: getQ(t.reviewId), reason: t.reason });
-      const used = new Set(s.items.map(i => i.id));
-      if (aiUsable() && !bankOnly) {
-        const ctl = new AbortController();
-        ctls.add(ctl);
-        return generate(t, ctl.signal).then(
-          q => ({ q, reason: t.reason, followup: t.followup }),
-          e => {
-            if (e?.code === 'cancelled') throw e;
-            const msg = aiFailed(e?.code);
-            const q = bankPick(t, used);
-            if (!q) throw e;
-            return { q, reason: t.reason, followup: t.followup, note: msg };
-          }
-        ).finally(() => ctls.delete(ctl));
-      }
-      const q = bankPick(t, used);
-      return Promise.resolve(q ? { q, reason: t.reason, followup: t.followup } : null);
+    // Turns a plan into a question: Claude writes it when available, otherwise the bank supplies one.
+    function realize(t, bankOnly = false) {
+      if (t.q) return Promise.resolve(t);
+      const used = usedIds();
+      const fromBank = msg => { const q = bankPick(t, used); return q ? { ...t, q, note: msg } : null; };
+      if (!aiUsable() || bankOnly) return Promise.resolve(fromBank(''));
+      const p = (t.followup && twins.get(t.followup.key)) || aiCall(t);
+      return p.then(q => ({ ...t, q }), e => {
+        if (e?.code === 'cancelled') throw e;
+        const r = fromBank(aiFailed(e?.code));
+        if (!r) throw e;
+        return r;
+      });
     }
 
-    // Reported questions don't count toward the session length.
-    const answeredCount = () => s.items.filter(i => !i.void).length;
-
+    // Prepares the next question while the current one is on screen, so there's no wait.
     function prefetch() {
-      if (!pending && s && answeredCount() < s.length) {
-        pending = makeNext();
-        pending.catch(() => {});   // a cancelled prefetch nobody waits for is not an error
-      }
+      if (pending || !s) return;
+      const onScreen = cur && st && !st.revealed ? 1 : 0;
+      if (answeredCount() + onScreen >= s.length) return;
+      const t = planNext(s.shown + 1);
+      pending = t ? realize(t) : Promise.resolve(null);
+      pending.catch(() => {});
     }
 
     async function advance() {
@@ -686,7 +856,7 @@
       if (answeredCount() >= s.length) return finish();
       prefetch();
       const p = pending;
-      cur = null; failure = ''; note = '';
+      cur = null; st = null; failure = ''; note = '';
       draw();
       let next;
       try {
@@ -701,37 +871,53 @@
       if (p !== pending || !s) return;
       pending = null;
       if (!next) return finish();
-      if (next.followup) { s.followups = s.followups.filter(x => x !== next.followup); save(); }
-      cur = next; resp = null; revealed = false; started = Date.now();
+      if (next.followup) s.followups = s.followups.filter(x => x.key !== next.followup.key);
+      s.shown++;
+      save();
+      cur = next;
+      st = { resp: null, revealed: false, elim: [] };
+      started = Date.now();
       draw();
+      prefetch();
     }
 
     // Swaps a slow AI question for a built-in one.
     function useBankNow() {
       ctls.forEach(c => c.abort());
-      pending = makeNext(true);
+      const t = planNext(s.shown + 1);
+      pending = t ? realize(t, true) : Promise.resolve(null);
       pending.catch(() => {});
       advance();
     }
 
-    function begin() {
-      s = state.adaptive = { section: opts.section, length: opts.length, items: [], followups: [], before: abilities(), started: Date.now() };
+    function begin(section, length) {
+      s = state.adaptive = { section, length, items: [], followups: [], shown: 0, before: abilities(), started: Date.now() };
       save();
+      // Start instantly with a fresh built-in question while Claude writes the next one.
+      if (aiUsable() && section !== 'review') {
+        const t = planNext(1);
+        const q = t && !t.q && !t.origin && bankPick(t);
+        if (q && lastResults()[q.id] !== true) { pending = Promise.resolve({ ...t, q }); }
+      }
       advance();
     }
 
     function check() {
-      if (!cur || revealed) return;
-      if (cur.q.type === 'spr') resp = $('[data-spr]', el).value.trim();
-      if (!answered(resp)) return;
-      revealed = true;
+      if (!cur || !st || st.revealed) return;
       const q = cur.q;
-      const ok = isCorrect(q, resp);
-      record(q, ok, 'adaptive');
-      s.items.push({ id: q.id, ok, resp, reason: cur.reason, d: q.domain, k: q.skill, f: q.difficulty, secs: Math.round((Date.now() - started) / 1000) });
-      if (!ok) s.followups.push({ domain: q.domain, skill: q.skill, difficulty: q.difficulty, due: s.items.length + 2 });
+      if (q.type === 'spr') st.resp = $('[data-spr]', el)?.value.trim() ?? '';
+      if (!answered(st.resp)) return;
+      st.revealed = true;
+      const ok = isCorrect(q, st.resp);
+      const undo = record(q, ok, 'adaptive', cur.origin);
+      s.items.push({ id: q.id, origin: cur.origin, ok, resp: st.resp, d: q.domain, k: q.skill, f: q.difficulty, secs: Math.round((Date.now() - started) / 1000), undo });
+      if (!ok) {
+        // Reinforce quietly: a similar question comes back two questions from now.
+        const f = { key: q.id + ':' + s.shown, origin: cur.origin || q.id, ref: q.id, d: q.domain, k: q.skill, f: q.difficulty, due: s.shown + 3 };
+        s.followups.push(f);
+        if (aiUsable()) twins.set(f.key, aiCall({ domain: f.d, skill: f.k, difficulty: f.f, ref: q }));
+      }
       save();
-      prefetch();   // Claude writes the next question while you read the explanation.
       draw();
     }
 
@@ -739,10 +925,8 @@
       const item = s.items[s.items.length - 1];
       if (!item || item.void) return;
       item.void = true;
-      for (let i = state.attempts.length - 1; i >= 0; i--) {
-        if (state.attempts[i].id === item.id) { state.attempts.splice(i, 1); break; }
-      }
-      s.followups = s.followups.filter(f => f.due !== s.items.length + 2 || f.skill !== item.k);
+      undoRecord(item.id, item.undo);
+      s.followups = s.followups.filter(f => f.ref !== item.id);
       save();
       note = 'Thanks. This question won\'t count toward your stats.';
       draw();
@@ -770,7 +954,7 @@
 
     function aiLine() {
       if (ai.state === 'checking') return '<p class="ai-line muted small">Checking whether Claude is available…</p>';
-      if (ai.state === 'ready') return '<p class="ai-line small"><span class="chip ai">Unlimited</span> Claude writes every question for you as you go, aimed at your weak spots. The first time, Claude asks for permission, and each question uses a little of your Claude usage.</p>';
+      if (ai.state === 'ready') return '<p class="ai-line small">Claude writes a new SAT question for you each time, aimed at your weak spots and your target score. The first time, Claude asks for permission, and each question uses a little of your Claude usage.</p>';
       return `<p class="ai-line muted small">Questions come from the built-in bank of ${BANK.length}. Open SatStat on claude.ai to get unlimited questions written by Claude.</p>`;
     }
 
@@ -783,11 +967,14 @@
     function drawSetup() {
       const ab = abilities();
       const ss = skillStats();
+      const due = dueMistakes().length;
+      const memory = Object.values(state.mistakes);
       const weakSkills = Object.entries(ss).filter(([, v]) => v.n >= 2).sort((a, b) => a[1].ok / a[1].n - b[1].ok / b[1].n).slice(0, 4);
       const opt = (k, v, title, sub) => `<button class="option ${opts[k] === v ? 'active' : ''}" data-opt="${k}" data-v="${v}"><strong>${title}</strong><span>${sub}</span></button>`;
-      const hist = state.adaptiveHistory.slice(-8).reverse().map(x => `<tr><td>${fmtDate(x.t)}</td><td>${x.section === 'mix' ? 'Mixed' : SECTIONS[x.section]}</td><td class="num">${x.correct}/${x.total}</td><td class="num">${pct(x.correct, x.total)}%</td></tr>`).join('');
+      const hist = state.adaptiveHistory.slice(-8).reverse().map(x => `<tr><td>${fmtDate(x.t)}</td><td>${x.section === 'mix' ? 'Mixed' : x.section === 'review' ? 'Mistake review' : SECTIONS[x.section]}</td><td class="num">${x.correct}/${x.total}</td><td class="num">${pct(x.correct, x.total)}%</td></tr>`).join('');
       el.innerHTML = `
-        <div class="page-head"><div><h1>Adaptive test</h1><p>Answer like a test, see right away if you got it, and every next question adapts to you.</p></div></div>
+        <div class="page-head"><div><h1>Study</h1><p>A test that adapts as you go: every answer is checked right away, and every next question is picked for you.</p></div></div>
+        ${due ? `<div class="card due-card"><div><strong>${plural(due, 'mistake')} due for review.</strong> <span class="muted">You'll get a similar question for each one.</span></div><button class="btn primary" data-act="review">Review now</button></div>` : ''}
         <div class="grid two">
           <div class="card stack">
             <h2>Section</h2>
@@ -804,15 +991,16 @@
             </div>
             ${aiLine()}
             <div class="row">
+              <span class="small muted">Keys: A–D to choose, Enter to check</span>
               <span class="spacer"></span>
-              <button class="btn primary" data-act="begin">Start adaptive test</button>
+              <button class="btn primary" data-act="begin">Start</button>
             </div>
           </div>
           <div class="card">
-            <div class="card-head"><h2>What SatStat knows about you</h2><span class="muted">From every answer you've given</span></div>
+            <div class="card-head"><h2>What SatStat knows about you</h2><a class="small" href="#/review">${plural(memory.filter(m => !m.mastered).length, 'concept')} in memory</a></div>
             ${levelBars(ALL_DOMAINS, ab)}
             ${weakSkills.length ? `<p class="small muted" style="margin:16px 0 6px">Weakest skills so far</p><div class="chips">${weakSkills.map(([k, v]) => `<span class="chip diff-hard">${esc(k)} · ${pct(v.ok, v.n)}%</span>`).join('')}</div>` : ''}
-            <p class="small muted">Each bar is your chance of getting a medium question right. Questions you miss come back as follow-ups, and harder questions show up as you improve.</p>
+            <p class="small muted">Each bar is your chance of getting a medium question right. Anything you miss comes back as a similar question later in the session, then again after 1, 3 and 7 days.</p>
           </div>
         </div>
         ${hist ? `<div class="card"><div class="card-head"><h2>Past sessions</h2></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Section</th><th class="num">Correct</th><th class="num">Accuracy</th></tr></thead><tbody>${hist}</tbody></table></div></div>` : ''}`;
@@ -823,9 +1011,9 @@
       const correct = items.filter(i => i.ok).length;
       let run = 0;
       for (let i = items.length - 1; i >= 0 && items[i].ok; i--) run++;
-      const n = items.length + (revealed ? 0 : 1);
-      const domains = s.section === 'mix' ? ALL_DOMAINS : DOMAINS[s.section];
-      const last = revealed && s.items[s.items.length - 1];
+      const num = items.length + (st && !st.revealed ? 1 : 0);
+      const domains = sectionDomains();
+      const last = st?.revealed && s.items[s.items.length - 1];
       const isLast = items.length >= s.length;
       const aiWriting = aiUsable() && !cur;
 
@@ -837,30 +1025,29 @@
           (aiWriting ? '<div class="q-actions" style="justify-content:center"><button class="btn sm" data-act="bank-now">Use a built-in question instead</button></div>' : '');
       } else {
         main = `
-          <div class="why">${esc(cur.reason)}</div>
-          ${questionHTML(cur.q, { resp, revealed })}
+          ${questionHTML(cur.q, st, { num: Math.max(1, num), flag: state.review.includes(cur.q.id) })}
           <div class="q-actions">
-            ${revealed
+            ${st.revealed
               ? `<button class="btn primary" data-act="next">${isLast ? 'See results' : 'Next question'}</button>`
               : '<button class="btn primary" data-act="check">Check answer</button>'}
             <span class="spacer"></span>
-            ${cur.q.section === 'math' ? '<a class="btn" href="https://www.desmos.com/calculator" target="_blank" rel="noopener">Desmos</a>' : ''}
-            ${revealed && cur.q.source === 'ai' && !last?.void ? '<button class="btn" data-act="report">Report a problem</button>' : ''}
+            ${cur.q.section === 'math' ? desmosLink : ''}
+            ${st.revealed && cur.q.source === 'ai' && !last?.void ? '<button class="btn ghost" data-act="report">Report a problem</button>' : ''}
           </div>`;
       }
 
       el.innerHTML = `
         <div class="exam-bar">
-          <strong>Adaptive test</strong>
-          <span class="muted">Question ${Math.min(n, s.length)} of ${s.length}</span>
+          <strong>${s.section === 'review' ? 'Mistake review' : 'Study'}</strong>
+          <span class="muted">${Math.min(Math.max(1, num), s.length)} of ${s.length}</span>
           <div class="bar" style="flex:1;min-width:80px"><span style="width:${pct(items.length, s.length)}%"></span></div>
           <span class="small"><strong>${correct}/${items.length}</strong> correct${run >= 3 ? ` · ${run} in a row` : ''}</span>
-          <button class="btn sm" data-act="end">End session</button>
+          <button class="btn sm" data-act="end">End</button>
         </div>
         ${note || cur?.note ? `<div class="notice">${esc(note || cur.note)}</div>` : ''}
         <div class="adaptive-layout">
-          <div class="card">${main}</div>
-          <aside class="card">
+          <div class="card q-card">${main}</div>
+          <aside class="card levels">
             <div class="card-head"><h3>Your levels</h3><span class="muted small">Live</span></div>
             ${levelBars(domains, abilities(), cur?.q.domain)}
           </aside>
@@ -877,13 +1064,15 @@
         return `<tr><td>${esc(d)}</td><td class="num">${di.filter(i => i.ok).length}/${di.length}</td><td class="num">${b}% → <strong>${a}%</strong> <span class="${a >= b ? 'up' : 'down'}">${a >= b ? '+' : ''}${a - b}</span></td></tr>`;
       }).join('');
       const missed = items.filter(i => !i.ok && getQ(i.id));
-      const weakest = (summary.section === 'mix' ? ALL_DOMAINS : DOMAINS[summary.section]).slice().sort((a, b) => summary.after[a] - summary.after[b])[0];
+      const concepts = new Set(items.filter(i => !i.ok).map(i => i.origin || i.id)).size;
+      const reinforced = items.filter(i => i.origin && i.ok).length;
+      const weakest = (summary.section === 'rw' || summary.section === 'math' ? DOMAINS[summary.section] : ALL_DOMAINS).slice().sort((a, b) => summary.after[a] - summary.after[b])[0];
       el.innerHTML = `
-        <div class="page-head"><div><h1>Session complete</h1><p>Next time, SatStat will lean toward ${esc(weakest)}.</p></div>
-          <div class="row"><a class="btn" href="#/home">Home</a><button class="btn primary" data-act="again">Start another</button></div></div>
+        <div class="page-head"><div><h1>Session complete</h1><p>${concepts ? `Similar questions for the ${plural(concepts, 'concept')} you missed will come back tomorrow. ` : ''}Next time, SatStat will lean toward ${esc(weakest)}.</p></div>
+          <div class="row"><a class="btn" href="#/review">Mistakes</a><button class="btn primary" data-act="again">Study again</button></div></div>
         <div class="grid two">
           <div class="card"><div class="stat-label">Score</div><div class="score-big">${correct}<span class="muted" style="font-size:20px"> / ${items.length}</span></div>
-            <p class="small muted">${pct(correct, items.length)}% correct</p></div>
+            <p class="small muted">${pct(correct, items.length)}% correct${reinforced ? ` · ${plural(reinforced, 'earlier mistake')} answered right this time` : ''}</p></div>
           <div class="card"><div class="card-head"><h2>How your levels moved</h2></div>
             ${rows ? `<div class="table-wrap"><table><thead><tr><th>Domain</th><th class="num">Correct</th><th class="num">Level</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No answers recorded.</p>'}</div>
         </div>
@@ -895,14 +1084,10 @@
     el.addEventListener('click', e => {
       const o = e.target.closest('[data-opt]');
       if (o) { opts[o.dataset.opt] = o.dataset.opt === 'length' ? Number(o.dataset.v) : o.dataset.v; return drawSetup(); }
-      const c = e.target.closest('[data-choice]');
-      if (c && cur && !revealed) {
-        resp = Number(c.dataset.choice);
-        el.querySelectorAll('.choice').forEach(b => b.classList.toggle('selected', b === c));
-        return;
-      }
+      if (cur && choiceClick(e, st, el)) return;
       const act = e.target.closest('[data-act]')?.dataset.act;
-      if (act === 'begin') begin();
+      if (act === 'begin') begin(opts.section, opts.length);
+      if (act === 'review') begin('review', Math.min(20, dueMistakes().length));
       if (act === 'check') check();
       if (act === 'next') advance();
       if (act === 'retry') { pending = null; advance(); }
@@ -910,21 +1095,31 @@
       if (act === 'report') report();
       if (act === 'end') finish();
       if (act === 'again') { summary = null; drawSetup(); }
-    });
-    el.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && e.target.matches('[data-spr]')) check();
+      if (act === 'flag' && cur) {
+        const id = cur.q.id;
+        state.review = state.review.includes(id) ? state.review.filter(x => x !== id) : [...state.review, id];
+        save();
+        drawRunning();
+      }
     });
 
+    const unkey = keys({
+      choose: k => chooseKey(cur?.q, st, el, k),
+      enter: () => { if (!s || !cur) return; st.revealed ? advance() : check(); }
+    });
     const onAI = () => { if (!s && !summary) drawSetup(); };
     ai.listeners.add(onAI);
 
-    if (s) advance(); else draw();
-    return () => { ai.listeners.delete(onAI); ctls.forEach(c => c.abort()); };
+    if (s) advance();
+    else if (params.get('start') === 'review' && dueMistakes().length) begin('review', Math.min(20, dueMistakes().length));
+    else draw();
+    return () => { unkey(); ai.listeners.delete(onAI); ctls.forEach(c => c.abort()); };
   }
 
   function practice(el, params) {
+    const direct = getQ(params.get('q'));   // a specific question to retry
     const f = {
-      source: aiUsable() && !params.get('mode') ? 'ai' : 'bank',
+      source: aiUsable() && !params.get('mode') && !direct ? 'ai' : 'bank',
       section: params.get('section') || 'all',
       domain: params.get('domain') || 'all',
       skill: 'all',
@@ -933,10 +1128,9 @@
     };
     if (f.domain !== 'all') f.section = SECTION_OF[f.domain];
 
-    const direct = getQ(params.get('q'));   // a specific question to retry
     const seen = new Set();
     const session = { n: 0, ok: 0 };
-    let pool = [], cur = null, st = null;
+    let pool = [], cur = null, st = null, undo = null;
     let pending = null, ctl = null, note = '';
 
     function buildPool() {
@@ -956,11 +1150,12 @@
     function aiTarget() {
       const ab = abilities();
       const domains = f.domain !== 'all' ? [f.domain] : f.section === 'all' ? ALL_DOMAINS : DOMAINS[f.section];
-      const domain = weighted(domains, domains.map(d => 1.2 - mastery(ab[d])));
+      const domain = weighted(domains, domains.map(d => DOMAIN_SHARE[d] * (1.3 - mastery(ab[d]))));
       const skills = f.skill !== 'all' ? [f.skill] : SKILLS[domain];
-      return { domain, skill: skills[Math.floor(Math.random() * skills.length)], difficulty: f.difficulty !== 'all' ? f.difficulty : levelFor(ab[domain]) };
+      return { domain, skill: skills[Math.floor(Math.random() * skills.length)], difficulty: f.difficulty !== 'all' ? f.difficulty : levelFor(ab[domain] + stretch()) };
     }
 
+    // Writes the next question in the background while the current one is on screen.
     function requestAI() {
       ctl?.abort();
       ctl = new AbortController();
@@ -970,13 +1165,14 @@
         note = aiFailed(e?.code);
         return bankPick(t, seen);
       });
-      p.catch(() => {});   // a cancelled prefetch nobody waits for is not an error
+      p.catch(() => {});   // a cancelled request nobody waits for is not an error
       pending = p;
       return p;
     }
 
     async function pick() {
-      st = { resp: null, revealed: false };
+      st = { resp: null, revealed: false, elim: [] };
+      undo = null;
       if (f.source === 'ai' && aiUsable()) {
         const p = pending || requestAI();
         cur = null;
@@ -987,7 +1183,9 @@
         pending = null;
         cur = q;
         if (q) seen.add(q.id);
-        return draw();
+        draw();
+        if (q) requestAI();
+        return;
       }
       const fresh = pool.filter(q => !seen.has(q.id));
       const from = fresh.length ? fresh : pool;
@@ -1006,19 +1204,16 @@
     function draw() {
       const domains = f.section === 'all' ? ALL_DOMAINS : DOMAINS[f.section];
       const opt = (v, label, sel) => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(label)}</option>`;
-      const flagged = cur && state.review.includes(cur.id);
       const useAI = f.source === 'ai' && aiUsable();
-      const last = state.attempts[state.attempts.length - 1];
       let body;
       if (cur) {
         body = `
-          ${questionHTML(cur, st)}
+          ${questionHTML(cur, st, { num: session.n + (st.revealed ? 0 : 1), flag: state.review.includes(cur.id) })}
           <div class="q-actions">
             ${st.revealed ? '<button class="btn primary" data-act="next">Next question</button>' : '<button class="btn primary" data-act="check">Check answer</button><button class="btn" data-act="next">Skip</button>'}
             <span class="spacer"></span>
-            ${cur.section === 'math' ? '<a class="btn" href="https://www.desmos.com/calculator" target="_blank" rel="noopener">Desmos</a>' : ''}
-            ${st.revealed && cur.source === 'ai' && last?.id === cur.id ? '<button class="btn" data-act="report">Report a problem</button>' : ''}
-            <button class="btn ${flagged ? 'active' : ''}" data-act="flag">${flagged ? 'Flagged' : 'Flag for review'}</button>
+            ${cur.section === 'math' ? desmosLink : ''}
+            ${st.revealed && cur.source === 'ai' && undo ? '<button class="btn ghost" data-act="report">Report a problem</button>' : ''}
           </div>`;
       } else if (useAI && pending) {
         body = loadingHTML('Claude is writing a question for you…');
@@ -1027,11 +1222,11 @@
       }
       el.innerHTML = `
         <div class="page-head">
-          <div><h1>Practice</h1><p>${aiUsable() ? 'Unlimited questions written by Claude, or the built-in bank. Instant explanations.' : `${BANK.length} questions across all 8 SAT domains. Instant explanations, no limits.`}</p></div>
+          <div><h1>Practice</h1><p>${aiUsable() ? 'Pick a skill and drill it. Claude writes new questions as fast as you answer them.' : `${BANK.length} questions across all 8 SAT domains, with instant explanations.`}</p></div>
           <div class="muted">${session.n ? `This session: ${session.ok}/${session.n} correct` : ''}</div>
         </div>
         <div class="filters">
-          ${ai.state === 'ready' ? `<select class="input" data-f="source" aria-label="Question source">${opt('ai', 'Written by Claude', f.source)}${opt('bank', 'Built-in bank', f.source)}</select>` : ''}
+          ${ai.state === 'ready' ? `<select class="input" data-f="source" aria-label="Question source">${opt('ai', 'New questions by Claude', f.source)}${opt('bank', 'Built-in bank', f.source)}</select>` : ''}
           <select class="input" data-f="section" aria-label="Section">${opt('all', 'All sections', f.section)}${opt('rw', SECTIONS.rw, f.section)}${opt('math', SECTIONS.math, f.section)}</select>
           <select class="input" data-f="domain" aria-label="Domain">${opt('all', 'All domains', f.domain)}${domains.map(d => opt(d, d, f.domain)).join('')}</select>
           ${f.domain !== 'all' ? `<select class="input" data-f="skill" aria-label="Skill">${opt('all', 'All skills', f.skill)}${SKILLS[f.domain].map(k => opt(k, k, f.skill)).join('')}</select>` : ''}
@@ -1039,7 +1234,7 @@
           ${useAI ? '' : `<select class="input" data-f="mode" aria-label="Which questions">${opt('all', 'All questions', f.mode)}${opt('new', 'Not yet answered', f.mode)}${opt('missed', 'Last answer wrong', f.mode)}${opt('flagged', 'Flagged for review', f.mode)}</select>`}
         </div>
         ${note ? `<div class="notice">${esc(note)}</div>` : ''}
-        <div class="card">${body}</div>`;
+        <div class="card q-card">${body}</div>`;
     }
 
     el.addEventListener('change', e => {
@@ -1053,34 +1248,23 @@
     });
 
     el.addEventListener('click', e => {
-      const c = e.target.closest('[data-choice]');
-      if (c && st && !st.revealed) {
-        st.resp = Number(c.dataset.choice);
-        el.querySelectorAll('.choice').forEach(b => b.classList.toggle('selected', b === c));
-        return;
-      }
+      if (cur && choiceClick(e, st, el)) return;
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'check') check();
       if (act === 'next') { note = ''; pick(); }
-      if (act === 'flag') {
+      if (act === 'flag' && cur) {
         state.review = state.review.includes(cur.id) ? state.review.filter(id => id !== cur.id) : [...state.review, cur.id];
         save(); draw();
       }
-      if (act === 'report') {
-        for (let i = state.attempts.length - 1; i >= 0; i--) {
-          if (state.attempts[i].id === cur.id) { state.attempts.splice(i, 1); break; }
-        }
+      if (act === 'report' && undo) {
+        undoRecord(cur.id, undo);
+        undo = null;
         session.n--;
         if (isCorrect(cur, st.resp)) session.ok--;
-        save();
         note = 'Thanks. This question won\'t count toward your stats.';
         draw();
       }
       if (act === 'clear') { Object.assign(f, { section: 'all', domain: 'all', skill: 'all', difficulty: 'all', mode: 'all' }); reset(); }
-    });
-
-    el.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && e.target.matches('[data-spr]')) check();
     });
 
     function check() {
@@ -1089,13 +1273,16 @@
       if (!answered(st.resp)) return;
       st.revealed = true;
       const ok = isCorrect(cur, st.resp);
-      record(cur, ok, 'practice');
+      undo = record(cur, ok, 'practice');
       session.n++;
       if (ok) session.ok++;
-      if (f.source === 'ai' && aiUsable()) requestAI();   // write the next one while you read
       draw();
     }
 
+    const unkey = keys({
+      choose: k => chooseKey(cur, st, el, k),
+      enter: () => { if (!cur) return; st.revealed ? (note = '', pick()) : check(); }
+    });
     const onAI = () => {
       if (ai.state === 'ready' && f.source === 'bank' && !session.n && !direct && !f.mode.match(/missed|flagged/) && !(st && answered(st.resp))) {
         f.source = 'ai';
@@ -1106,8 +1293,8 @@
     ai.listeners.add(onAI);
 
     buildPool();
-    if (direct) { cur = direct; st = { resp: null, revealed: false }; seen.add(direct.id); draw(); } else pick();
-    return () => { ai.listeners.delete(onAI); ctl?.abort(); };
+    if (direct) { cur = direct; st = { resp: null, revealed: false, elim: [] }; seen.add(direct.id); draw(); } else pick();
+    return () => { unkey(); ai.listeners.delete(onAI); ctl?.abort(); };
   }
 
   function exams(el) {
@@ -1135,7 +1322,7 @@
         const pool = shuffle(BANK.filter(q => q.section === s)).slice(0, countFor(s, opts.size));
         qs = qs.concat(pool.sort((a, b) => order[a.difficulty] - order[b.difficulty]));
       }
-      ex = { qs, resp: Array(qs.length).fill(null), flags: new Set(), i: 0, started: Date.now(), limit: plan(opts.section, opts.size).sec, confirm: 0 };
+      ex = { qs, st: qs.map(() => ({ resp: null, revealed: false, elim: [] })), flags: new Set(), i: 0, started: Date.now(), limit: plan(opts.section, opts.size).sec, confirm: 0 };
       phase = 'running';
       timer = setInterval(tick, 1000);
       draw();
@@ -1153,7 +1340,8 @@
       ex.elapsed = Math.min(ex.limit, Math.round((Date.now() - ex.started) / 1000));
       const per = {};
       ex.qs.forEach((q, i) => {
-        const ok = answered(ex.resp[i]) && isCorrect(q, ex.resp[i]);
+        const r = ex.st[i].resp;
+        const ok = answered(r) && isCorrect(q, r);
         record(q, ok, 'exam');
         const s = per[q.section] ||= { n: 0, ok: 0, w: 0, wok: 0 };
         s.n++; s.w += WEIGHT[q.difficulty];
@@ -1181,7 +1369,7 @@
         <tr><td>${fmtDate(x.t)}</td><td>${x.section === 'full' ? 'Full test' : SECTIONS[x.section]}${x.size === 'mini' ? ' (mini)' : ''}</td>
         <td class="num">${x.correct}/${x.total}</td><td class="num">${fmtTime(x.elapsed)}</td><td class="num"><strong>${x.score}</strong></td></tr>`).join('');
       el.innerHTML = `
-        <div class="page-head"><div><h1>Mock exams</h1><p>Timed, SAT-paced practice tests from the built-in bank, with a score estimate and full review.</p></div></div>
+        <div class="page-head"><div><h1>Mock exams</h1><p>Timed at real SAT pacing, with a score estimate and full review. Uses the built-in bank.</p></div></div>
         <div class="card stack">
           <h2>Section</h2>
           <div class="option-grid">
@@ -1210,27 +1398,25 @@
       const q = ex.qs[ex.i];
       const left = ex.limit - Math.floor((Date.now() - ex.started) / 1000);
       const nav = ex.qs.map((_, i) => {
-        const cls = [answered(ex.resp[i]) ? 'answered' : '', i === ex.i ? 'current' : '', ex.flags.has(i) ? 'flagged' : ''].join(' ');
+        const cls = [answered(ex.st[i].resp) ? 'answered' : '', i === ex.i ? 'current' : '', ex.flags.has(i) ? 'flagged' : ''].join(' ');
         return `<button class="${cls}" data-go="${i}">${i + 1}</button>`;
       }).join('');
       el.innerHTML = `
         <div class="exam-bar">
           <strong>${SECTIONS[q.section]}</strong>
-          <span class="muted">Question ${ex.i + 1} of ${ex.qs.length}</span>
+          <span class="muted">${ex.i + 1} of ${ex.qs.length}</span>
           <span class="spacer"></span>
           <span class="timer ${left < 120 ? 'low' : ''}" id="timer">${fmtTime(left)}</span>
-          ${q.section === 'math' ? '<a class="btn sm" href="https://www.desmos.com/calculator" target="_blank" rel="noopener">Desmos</a>' : ''}
+          ${q.section === 'math' ? desmosLink.replace('class="btn"', 'class="btn sm"') : ''}
           <button class="btn sm primary" data-act="submit">Submit</button>
         </div>
         ${ex.confirm ? `<div class="card row" style="margin-bottom:16px"><span>You have ${plural(ex.confirm, 'unanswered question')}. Submit anyway?</span><span class="spacer"></span>
           <button class="btn sm" data-act="cancel-submit">Keep working</button><button class="btn sm primary" data-act="submit">Submit now</button></div>` : ''}
-        <div class="card">
-          ${questionHTML(q, { resp: ex.resp[ex.i], revealed: false })}
+        <div class="card q-card">
+          ${questionHTML(q, ex.st[ex.i], { num: ex.i + 1, flag: ex.flags.has(ex.i) })}
           <div class="q-actions">
             <button class="btn" data-act="prev" ${ex.i === 0 ? 'disabled' : ''}>Back</button>
             <button class="btn primary" data-act="next" ${ex.i === ex.qs.length - 1 ? 'disabled' : ''}>Next</button>
-            <span class="spacer"></span>
-            <button class="btn ${ex.flags.has(ex.i) ? 'active' : ''}" data-act="flag">${ex.flags.has(ex.i) ? 'Marked' : 'Mark for review'}</button>
           </div>
           <div class="qnav">${nav}</div>
         </div>`;
@@ -1240,12 +1426,13 @@
       const rows = Object.entries(ex.per).map(([s, v]) =>
         `<div class="row" style="justify-content:space-between"><span>${SECTIONS[s]}</span><span><strong>${Math.round((200 + 600 * v.wok / v.w) / 10) * 10}</strong> <span class="muted">(${v.ok}/${v.n})</span></span></div>`).join('');
       const review = ex.qs.map((q, i) => {
-        const ok = answered(ex.resp[i]) && isCorrect(q, ex.resp[i]);
-        return `<details class="review"><summary><span class="dot ${ok ? 'ok' : 'bad'}"></span>Question ${i + 1} <span class="muted small">${esc(q.skill || q.domain)}${answered(ex.resp[i]) ? '' : ' · unanswered'}</span></summary>${questionHTML(q, { resp: ex.resp[i], revealed: true })}</details>`;
+        const r = ex.st[i].resp;
+        const ok = answered(r) && isCorrect(q, r);
+        return `<details class="review"><summary><span class="dot ${ok ? 'ok' : 'bad'}"></span>Question ${i + 1} <span class="muted small">${esc(q.skill || q.domain)}${answered(r) ? '' : ' · unanswered'}</span></summary>${questionHTML(q, { resp: r, revealed: true })}</details>`;
       }).join('');
       const max = Object.keys(ex.per).length * 800;
       el.innerHTML = `
-        <div class="page-head"><div><h1>Exam results</h1><p>Finished in ${fmtTime(ex.elapsed)} of ${fmtTime(ex.limit)}.</p></div>
+        <div class="page-head"><div><h1>Exam results</h1><p>Finished in ${fmtTime(ex.elapsed)} of ${fmtTime(ex.limit)}. Questions you missed are now in your mistake memory.</p></div>
           <div class="row"><button class="btn" data-act="again">Back to exams</button></div></div>
         <div class="grid two">
           <div class="card"><div class="stat-label">Estimated score</div><div class="score-big">${ex.score}<span class="muted" style="font-size:20px"> / ${max}</span></div>
@@ -1259,11 +1446,7 @@
       const o = e.target.closest('[data-opt]');
       if (o) { opts[o.dataset.opt] = o.dataset.v; return drawSetup(); }
       if (phase === 'running') {
-        const c = e.target.closest('[data-choice]');
-        if (c) {
-          ex.resp[ex.i] = Number(c.dataset.choice);
-          return drawRunning();
-        }
+        if (choiceClick(e, ex.st[ex.i], el)) return drawRunning();
         const g = e.target.closest('[data-go]');
         if (g) { ex.i = Number(g.dataset.go); return drawRunning(); }
       }
@@ -1271,9 +1454,9 @@
       if (act === 'start') start();
       if (act === 'prev' && ex.i > 0) { ex.i--; drawRunning(); }
       if (act === 'next' && ex.i < ex.qs.length - 1) { ex.i++; drawRunning(); }
-      if (act === 'flag') { ex.flags.has(ex.i) ? ex.flags.delete(ex.i) : ex.flags.add(ex.i); drawRunning(); }
+      if (act === 'flag' && phase === 'running') { ex.flags.has(ex.i) ? ex.flags.delete(ex.i) : ex.flags.add(ex.i); drawRunning(); }
       if (act === 'submit') {
-        const blank = ex.resp.filter(r => !answered(r)).length;
+        const blank = ex.st.filter(x => !answered(x.resp)).length;
         if (blank && !ex.confirm) { ex.confirm = blank; drawRunning(); } else finish();
       }
       if (act === 'cancel-submit') { ex.confirm = 0; drawRunning(); }
@@ -1282,13 +1465,49 @@
 
     el.addEventListener('input', e => {
       if (phase === 'running' && e.target.matches('[data-spr]')) {
-        ex.resp[ex.i] = e.target.value.trim();
-        el.querySelectorAll('.qnav button')[ex.i].classList.toggle('answered', ex.resp[ex.i] !== '');
+        ex.st[ex.i].resp = e.target.value.trim();
+        el.querySelectorAll('.qnav button')[ex.i].classList.toggle('answered', ex.st[ex.i].resp !== '');
       }
     });
 
+    const unkey = keys({
+      choose: k => { if (phase === 'running') { chooseKey(ex.qs[ex.i], ex.st[ex.i], el, k); drawRunning(); } },
+      enter: () => { if (phase === 'running' && ex.i < ex.qs.length - 1) { ex.i++; drawRunning(); } }
+    });
+
     draw();
-    return () => clearInterval(timer);
+    return () => { clearInterval(timer); unkey(); };
+  }
+
+  function review(el) {
+    const now = Date.now();
+    const all = Object.entries(state.mistakes);
+    const due = all.filter(([, m]) => !m.mastered && m.due <= now).sort((a, b) => a[1].due - b[1].due);
+    const later = all.filter(([, m]) => !m.mastered && m.due > now).sort((a, b) => a[1].due - b[1].due);
+    const mastered = all.filter(([, m]) => m.mastered).sort((a, b) => b[1].last - a[1].last);
+    const row = ([id, m]) => {
+      const q = getQ(id);
+      const step = m.mastered ? 'Mastered' : m.due <= now ? 'Due now' : `Next ${fmtWhen(m.due)}`;
+      return `<tr>
+        <td><strong class="small">${esc(m.k || m.d)}</strong><br><span class="muted small">${q ? esc(plain(q.passage || q.prompt).slice(0, 90)) + '…' : 'Question no longer saved'}</span></td>
+        <td class="num small">${m.misses} ${m.misses === 1 ? 'miss' : 'misses'}</td>
+        <td class="num small">${step}${m.mastered ? '' : `<br><span class="muted">${Math.min(m.stage, REVIEW_DAYS.length + 1)}/${REVIEW_DAYS.length + 1} steps</span>`}</td>
+        <td class="num">${q ? `<a class="btn sm" href="#/practice?q=${encodeURIComponent(id)}">Retry</a>` : ''}</td>
+      </tr>`;
+    };
+    const table = list => `<div class="table-wrap"><table><tbody>${list.map(row).join('')}</tbody></table></div>`;
+    el.innerHTML = `
+      <div class="page-head"><div><h1>Mistakes</h1><p>Every question you miss is remembered here. Study sessions bring back a similar question two questions later, then after 1, 3 and 7 days. Get it right each time and the concept is mastered.</p></div>
+        ${due.length ? '<a class="btn primary" href="#/adaptive?start=review">Review due mistakes</a>' : ''}</div>
+      <div class="grid stats">
+        <div class="card"><div class="stat-label">Due now</div><div class="stat-value">${due.length}</div><div class="stat-sub">Mixed into your next study session</div></div>
+        <div class="card"><div class="stat-label">Scheduled</div><div class="stat-value">${later.length}</div><div class="stat-sub">Coming back on a spaced schedule</div></div>
+        <div class="card"><div class="stat-label">Mastered</div><div class="stat-value">${mastered.length}</div><div class="stat-sub">Right at every review step</div></div>
+      </div>
+      ${all.length ? '' : '<div class="card empty"><p>No mistakes yet. Questions you miss anywhere in SatStat will show up here.</p><a class="btn primary" href="#/adaptive">Start studying</a></div>'}
+      ${due.length ? `<div class="card"><div class="card-head"><h2>Due now</h2></div>${table(due)}</div>` : ''}
+      ${later.length ? `<div class="card"><div class="card-head"><h2>Scheduled</h2></div>${table(later)}</div>` : ''}
+      ${mastered.length ? `<div class="card"><div class="card-head"><h2>Mastered</h2></div>${table(mastered.slice(0, 30))}</div>` : ''}`;
   }
 
   function vocab(el) {
@@ -1310,7 +1529,7 @@
       const card = deck[i];
       const tab = (v, label) => `<button class="btn sm ${filter === v ? 'active' : ''}" data-filter="${v}">${label}</button>`;
       el.innerHTML = `
-        <div class="page-head"><div><h1>Vocab</h1><p>${V.length} high-value SAT words. Flip a card, then sort it.</p></div></div>
+        <div class="page-head"><div><h1>Vocab</h1><p>${V.length} words that show up in SAT Words in Context questions. Flip a card, then sort it.</p></div></div>
         <div class="grid stats">
           <div class="card"><div class="stat-label">Mastered</div><div class="stat-value">${known} <span class="muted" style="font-size:18px">/ ${V.length}</span></div><div class="bar ok"><span style="width:${pct(known, V.length)}%"></span></div></div>
           <div class="card"><div class="stat-label">Still learning</div><div class="stat-value">${learning}</div><div class="stat-sub">Cards you've marked to review again</div></div>
@@ -1336,7 +1555,7 @@
       if (fb) { filter = fb.dataset.filter; build(); return draw(); }
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'flip') { flipped = !flipped; return draw(); }
-      if (act === 'learning' || act === 'known') {
+      if ((act === 'learning' || act === 'known') && deck[i]) {
         state.vocab[deck[i][0]] = act;
         save();
         i = (i + 1) % deck.length;
@@ -1352,7 +1571,7 @@
   function diagnostics(el) {
     if (!state.attempts.length) {
       el.innerHTML = `<div class="page-head"><div><h1>Diagnostics</h1><p>See exactly where you lose points.</p></div></div>
-        <div class="card empty"><p>Answer a few questions and your breakdown will appear here.</p><a class="btn primary" href="#/adaptive">Start an adaptive test</a></div>`;
+        <div class="card empty"><p>Answer a few questions and your breakdown will appear here.</p><a class="btn primary" href="#/adaptive">Start studying</a></div>`;
       return;
     }
     const ds = domainStats();
@@ -1380,32 +1599,19 @@
       if (x.ok) byDiff[m.f].ok++;
     }
     const skills = Object.entries(skillStats()).sort((a, b) => a[1].ok / a[1].n - b[1].ok / b[1].n);
-    const last = lastResults();
-    const missed = [];
-    for (let k = state.attempts.length - 1; k >= 0 && missed.length < 8; k--) {
-      const id = state.attempts[k].id;
-      if (last[id] === false && getQ(id) && !missed.includes(id)) missed.push(id);
-    }
     const recent = state.attempts.slice(-30);
     const recentAcc = pct(recent.filter(x => x.ok).length, recent.length);
 
     el.innerHTML = `
       <div class="page-head"><div><h1>Diagnostics</h1><p>Accuracy by section, domain, skill and difficulty. Your last ${recent.length} answers: ${recentAcc}% correct.</p></div>
-        <a class="btn" href="#/practice?mode=missed">Redo missed questions</a></div>
+        <a class="btn" href="#/review">Mistakes</a></div>
       <div class="grid two">${sectionCard('rw')}${sectionCard('math')}</div>
       <div class="grid two" style="margin-top:16px">
         <div class="card"><div class="card-head"><h2>By skill</h2><span class="muted">Weakest first</span></div>
           ${skills.map(([k, v]) => bar(k, v)).join('')}</div>
-        <div>
-          <div class="card"><div class="card-head"><h2>By difficulty</h2></div>
-            ${['easy', 'medium', 'hard'].map(d => bar(d[0].toUpperCase() + d.slice(1), byDiff[d])).join('')}</div>
-          <div class="card"><div class="card-head"><h2>Recent mistakes</h2><span class="muted">Still wrong on last try</span></div>
-            ${missed.length ? `<div class="table-wrap"><table><tbody>${missed.map(id => {
-              const q = getQ(id);
-              return `<tr><td><span class="small">${esc(q.skill || q.domain)}</span><br><span class="muted small">${esc(plain(q.passage || q.prompt).slice(0, 70))}…</span></td><td class="num"><a class="btn sm" href="#/practice?q=${id}">Retry</a></td></tr>`;
-            }).join('')}</tbody></table></div>` : '<div class="empty"><p>No outstanding mistakes.</p></div>'}
-          </div>
-        </div>
+        <div class="card"><div class="card-head"><h2>By difficulty</h2></div>
+          ${['easy', 'medium', 'hard'].map(d => bar(d[0].toUpperCase() + d.slice(1), byDiff[d])).join('')}
+          <p class="small muted">Scores above 1450 depend on hard questions: on the real test, doing well in the first module unlocks a harder second module.</p></div>
       </div>`;
   }
 
@@ -1414,15 +1620,14 @@
     const goal = state.profile.dailyGoal || 10;
     const weak = weakDomains();
     const days = daysUntilTest();
-    const missedCount = Object.entries(lastResults()).filter(([id, ok]) => !ok && getQ(id)).length;
+    const due = dueMistakes().length;
     const isSat = new Date().getDay() === 6;
 
     const tasks = [
       { id: 'goal', title: `Answer ${goal} questions`, sub: `${todayCount()} done so far today`, auto: todayCount() >= goal, href: '#/adaptive' },
-      { id: 'focus', title: `Focus drill: ${weak[0]}`, sub: 'Your weakest area right now', href: `#/practice?domain=${encodeURIComponent(weak[0])}` },
-      { id: 'vocab', title: 'Study 10 vocab cards', sub: 'Flip and sort until they stick', href: '#/vocab' }
+      { id: 'focus', title: `Focus drill: ${weak[0]}`, sub: 'Your weakest area right now', href: `#/practice?domain=${encodeURIComponent(weak[0])}` }
     ];
-    if (missedCount) tasks.push({ id: 'missed', title: `Redo ${plural(missedCount, 'missed question')}`, sub: 'Fix mistakes while they\'re fresh', href: '#/practice?mode=missed' });
+    if (due) tasks.push({ id: 'review', title: `Review ${plural(due, 'mistake')}`, sub: 'Similar questions for what you missed before', href: '#/adaptive?start=review' });
     if (isSat) tasks.push({ id: 'exam', title: 'Take a mini mock exam', sub: 'Weekly timed check-in', href: '#/exams' });
 
     const done = new Set(state.tasksDone[today] || []);
@@ -1439,15 +1644,15 @@
       const d = addDays(new Date(), k);
       const dow = d.getDay();
       const what = dow === 6 ? 'Mini mock exam + review every mistake'
-        : dow === 0 ? 'Light day: vocab and flagged questions'
-        : `Drill ${weak[k % weak.length]}, then an adaptive test`;
+        : dow === 0 ? 'Light day: mistake review and flagged questions'
+        : `Drill ${weak[k % weak.length]}, then a study session`;
       week += `<div class="week-day ${k === 0 ? 'today' : ''}"><div class="d">${k === 0 ? 'Today' : d.toLocaleDateString(undefined, { weekday: 'short' })}</div><div>${esc(what)}</div></div>`;
     }
 
     const phase = days == null ? null
       : days > 56 ? ['Foundations', 'Cover every domain and build steady habits. Untimed practice is fine.']
       : days > 21 ? ['Targeted practice', 'Spend most of your time on your two weakest domains. Take a mock every week.']
-      : days >= 0 ? ['Exam simulation', 'Take timed mocks, review every mistake, and keep vocab fresh.']
+      : days >= 0 ? ['Exam simulation', 'Take timed mocks, review every mistake, and keep your pace up.']
       : null;
     const doneCount = tasks.filter(t => t.auto || done.has(t.id)).length;
 
@@ -1482,11 +1687,12 @@
           <label class="field">Target score<input class="input" id="f-target" type="number" name="targetScore" min="400" max="1600" step="10" value="${esc(p.targetScore)}"></label>
           <label class="field">Daily question goal<input class="input" id="f-goal" type="number" name="dailyGoal" min="1" max="200" value="${esc(p.dailyGoal)}"></label>
         </div>
+        <p class="small muted">A target of 1350 or more makes study sessions reach for harder questions sooner.</p>
         <div class="q-actions"><button class="btn primary" type="submit">Save</button><span class="muted small" id="saved"></span></div>
       </form>
       <div class="card">
         <div class="card-head"><h2>Your data</h2></div>
-        <p class="muted small" style="margin-top:0">${state.attempts.length} answers, ${state.exams.length} exams, ${Object.keys(state.generated).length} saved AI questions, ${Object.keys(state.vocab).length} vocab cards sorted. Export a backup to move your progress to another device.</p>
+        <p class="muted small" style="margin-top:0">${state.attempts.length} answers, ${Object.keys(state.mistakes).length} remembered mistakes, ${state.exams.length} exams, ${Object.keys(state.generated).length} saved AI questions. Export a backup to move your progress to another device.</p>
         <div class="row">
           <button class="btn" id="export">Export progress</button>
           <label class="btn">Import progress<input type="file" id="import" accept="application/json" hidden></label>
@@ -1546,7 +1752,7 @@
 
   // ---------- Router & shell ----------
 
-  const routes = { home, adaptive, practice, exams, vocab, diagnostics, schedule, settings };
+  const routes = { home, adaptive, practice, review, exams, vocab, diagnostics, schedule, settings };
   const app = $('#app');
   const main = $('#main');
   let cleanup = null;
@@ -1565,6 +1771,8 @@
     const [path, qs] = route.replace(/^#\/?/, '').split('?');
     const name = routes[path] ? path : 'home';
     document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
+    const badge = $('#due-badge');
+    if (badge) { const n = dueMistakes().length; badge.textContent = n; badge.hidden = !n; }
     // A fresh container per render drops the previous view's listeners.
     const view = document.createElement('div');
     main.replaceChildren(view);

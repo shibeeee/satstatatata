@@ -4,8 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SatStat · Free SAT Prep</title>
-  <meta name="description" content="A free SAT prep dashboard: practice questions, timed mock exams, vocab flashcards, diagnostics and a study schedule.">
+  <meta name="description" content="Free SAT prep: adaptive study sessions with unlimited questions, a memory of your mistakes, timed mock exams and diagnostics.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Ctext x='16' y='22' font-family='Arial' font-weight='700' font-size='17' fill='white' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
   <link rel="stylesheet" href="css/katex.css">
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -25,10 +28,13 @@
           <svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span class="label">Home</span>
         </a>
         <a href="#/adaptive" data-route="adaptive">
-          <svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg><span class="label">Adaptive test</span>
+          <svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg><span class="label">Study</span>
         </a>
         <a href="#/practice" data-route="practice">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg><span class="label">Practice</span>
+        </a>
+        <a href="#/review" data-route="review">
+          <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg><span class="label">Mistakes</span><span class="badge" id="due-badge" hidden></span>
         </a>
         <a href="#/exams" data-route="exams">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span class="label">Mock exams</span>
