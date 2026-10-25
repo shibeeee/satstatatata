@@ -60,8 +60,20 @@
 
   let state = load();
 
+  // Drops the oldest saved AI questions beyond `keep`, never ones flagged for review.
+  function pruneGenerated(keep) {
+    const ids = Object.keys(state.generated).filter(id => !state.review.includes(id));
+    for (const id of ids.slice(0, Math.max(0, ids.length - keep))) delete state.generated[id];
+  }
+
   function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* storage unavailable */ }
+    try {
+      localStorage.setItem(KEY, JSON.stringify(state));
+    } catch {
+      // Usually a full quota: free space by halving the saved AI questions, then retry once.
+      pruneGenerated(Math.floor(Object.keys(state.generated).length / 2));
+      try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* storage unavailable */ }
+    }
   }
 
   // ---------- Helpers ----------
@@ -146,7 +158,18 @@
   function isCorrect(q, resp) {
     if (q.type === 'spr') {
       const r = toNum(resp);
-      return q.accept.some(a => Math.abs(toNum(a) - r) < 1e-6);
+      if (isNaN(r)) return false;
+      // Like the real SAT, a decimal that fills all 5 spaces (6 with a minus sign) may be
+      // rounded or cut off: for 2/3, .6666, .6667, 0.666 and 0.667 are all correct.
+      const typed = String(resp).replace(/\s+/g, '').replace(/^[-−]/, '');
+      const dec = typed.includes('.') ? typed.split('.')[1].length : 0;
+      const f = 10 ** dec;
+      return q.accept.some(a => {
+        const x = toNum(a);
+        if (Math.abs(x - r) < 1e-6) return true;
+        return dec > 0 && typed.length >= 5 &&
+          (Math.abs(r - Math.trunc(x * f) / f) < 1e-9 || Math.abs(r - Math.round(x * f) / f) < 1e-9);
+      });
     }
     return resp === q.answer;
   }
@@ -292,7 +315,7 @@
 
   function buildPrompt(t, format) {
     const section = SECTION_OF[t.domain];
-    const examples = BANK.filter(q => q.skill === t.skill).slice(0, 2).map(q => JSON.stringify({
+    const examples = shuffle(BANK.filter(q => q.skill === t.skill)).slice(0, 2).map(q => JSON.stringify({
       passage: q.passage || '', table: q.table || null, prompt: q.prompt,
       ...(q.type === 'spr' ? { type: 'spr', accept: q.accept } : { choices: q.choices, answer: q.answer }),
       explanation: q.explanation
@@ -316,7 +339,7 @@
       '- Match the style, length and rigor of real digital SAT questions, but write entirely new content. Never copy real SAT or College Board questions.',
       '- Facts about real people, places, events and science must be accurate. If you are not certain of a fact, use a generic or clearly fictional subject instead (for example "a team of researchers").',
       '- Exactly one answer is correct. Wrong choices must be tempting (common mistakes, misreadings) but clearly wrong on careful reading.',
-      '- No Markdown. Write ALL math (variables, expressions, equations, fractions, roots, exponents, angles) in LaTeX: inline between \\( and \\), and an equation or system shown on its own line between \\[ and \\] (use \\begin{aligned} ... \\end{aligned} for a system). Example: "\\[\\sqrt{3x + 4} = x\\]What is the sum of all solutions to the equation above?" Never use $ for math; dollar amounts are plain text like $40.',
+      '- No Markdown. Write ALL math (variables, expressions, equations, fractions, roots, exponents, angles) in LaTeX: inline between \\( and \\), and an equation or system shown on its own line between \\[ and \\] (use \\begin{aligned} ... \\end{aligned} for a system). Example shape: "\\[ equation \\]What is the value of \\(x\\)?" Never use $ for math; dollar amounts are plain text like $40.',
       '- This is JSON, so write every backslash twice: "\\\\(\\\\frac{3}{4}x\\\\)", "\\\\[x^2 - 5 = 0\\\\]".',
       '- The prompt is a clean question exactly as it would appear on the test: no notes, hints, caveats or instructions about how to answer.',
       '- The choices will be shuffled, so the explanation must refer to choices by their content, never by letter.',
@@ -391,7 +414,8 @@
       q.accept = accept;
     } else {
       const choices = Array.isArray(r.choices) ? r.choices.map(c => String(c).trim().replace(/^\(?[A-D][).:]\s+/, '')) : [];
-      const ans = Number(r.answer);
+      const letter = typeof r.answer === 'string' && /^\s*\(?([A-D])\)?\s*$/i.exec(r.answer);
+      const ans = letter ? 'ABCD'.indexOf(letter[1].toUpperCase()) : Number(r.answer);
       if (choices.length !== 4 || choices.some(c => !c || c.length > 700) || new Set(choices).size !== 4 ||
           !Number.isInteger(ans) || ans < 0 || ans > 3) return null;
       const order = shuffle([0, 1, 2, 3]);
@@ -415,9 +439,7 @@
     const q = validateAI(raw, t, format);
     if (!q) throw { code: 'invalid_question' };
     state.generated[q.id] = q;
-    // Keep storage bounded: drop the oldest AI questions nobody has flagged.
-    const ids = Object.keys(state.generated);
-    for (let i = 0; ids.length - i > 400; i++) if (!state.review.includes(ids[i])) delete state.generated[ids[i]];
+    pruneGenerated(200);
     state.aiTopics = [...state.aiTopics, q.topic].slice(-40);
     save();
     return q;
@@ -598,11 +620,8 @@
       const ok = d => useAI || BANK.some(q => q.domain === d && !used.has(q.id));
       const ab = abilities();
 
-      const fi = s.followups.findIndex(f => f.due <= n && ok(f.domain));
-      if (fi >= 0) {
-        const f = s.followups.splice(fi, 1)[0];
-        return { domain: f.domain, skill: f.skill, difficulty: DIFFS[Math.max(0, DIFFS.indexOf(f.difficulty) - 1)], reason: `Follow-up: another ${f.skill} question after your miss` };
-      }
+      const f = s.followups.find(x => x.due <= n && ok(x.domain));
+      if (f) return { followup: f, domain: f.domain, skill: f.skill, difficulty: DIFFS[Math.max(0, DIFFS.indexOf(f.difficulty) - 1)], reason: `Follow-up: another ${f.skill} question after your miss` };
 
       if (Math.random() < 0.2) {
         const last = lastResults();
@@ -629,36 +648,42 @@
       return { domain, skill, difficulty: levelFor(ab[domain]), reason };
     }
 
-    function makeNext() {
+    function makeNext(bankOnly = false) {
       const t = planNext();
       if (!t) return Promise.resolve(null);
       if (t.reviewId) return Promise.resolve({ q: getQ(t.reviewId), reason: t.reason });
       const used = new Set(s.items.map(i => i.id));
-      if (aiUsable()) {
+      if (aiUsable() && !bankOnly) {
         const ctl = new AbortController();
         ctls.add(ctl);
         return generate(t, ctl.signal).then(
-          q => ({ q, reason: t.reason }),
+          q => ({ q, reason: t.reason, followup: t.followup }),
           e => {
             if (e?.code === 'cancelled') throw e;
             const msg = aiFailed(e?.code);
             const q = bankPick(t, used);
             if (!q) throw e;
-            return { q, reason: t.reason, note: msg };
+            return { q, reason: t.reason, followup: t.followup, note: msg };
           }
         ).finally(() => ctls.delete(ctl));
       }
       const q = bankPick(t, used);
-      return Promise.resolve(q ? { q, reason: t.reason } : null);
+      return Promise.resolve(q ? { q, reason: t.reason, followup: t.followup } : null);
     }
 
+    // Reported questions don't count toward the session length.
+    const answeredCount = () => s.items.filter(i => !i.void).length;
+
     function prefetch() {
-      if (!pending && s && s.items.length < s.length) pending = makeNext();
+      if (!pending && s && answeredCount() < s.length) {
+        pending = makeNext();
+        pending.catch(() => {});   // a cancelled prefetch nobody waits for is not an error
+      }
     }
 
     async function advance() {
       if (!s) return;
-      if (s.items.length >= s.length) return finish();
+      if (answeredCount() >= s.length) return finish();
       prefetch();
       const p = pending;
       cur = null; failure = ''; note = '';
@@ -676,8 +701,17 @@
       if (p !== pending || !s) return;
       pending = null;
       if (!next) return finish();
+      if (next.followup) { s.followups = s.followups.filter(x => x !== next.followup); save(); }
       cur = next; resp = null; revealed = false; started = Date.now();
       draw();
+    }
+
+    // Swaps a slow AI question for a built-in one.
+    function useBankNow() {
+      ctls.forEach(c => c.abort());
+      pending = makeNext(true);
+      pending.catch(() => {});
+      advance();
     }
 
     function begin() {
@@ -789,17 +823,18 @@
       const correct = items.filter(i => i.ok).length;
       let run = 0;
       for (let i = items.length - 1; i >= 0 && items[i].ok; i--) run++;
-      const n = s.items.length + (revealed ? 0 : 1);
+      const n = items.length + (revealed ? 0 : 1);
       const domains = s.section === 'mix' ? ALL_DOMAINS : DOMAINS[s.section];
       const last = revealed && s.items[s.items.length - 1];
-      const isLast = s.items.length >= s.length;
+      const isLast = items.length >= s.length;
       const aiWriting = aiUsable() && !cur;
 
       let main;
       if (failure) {
         main = `<div class="empty"><p>${esc(failure)}</p><button class="btn primary" data-act="retry">Try again</button></div>`;
       } else if (!cur) {
-        main = loadingHTML(aiWriting ? 'Claude is writing your next question…' : 'Picking your next question…');
+        main = loadingHTML(aiWriting ? 'Claude is writing your next question…' : 'Picking your next question…') +
+          (aiWriting ? '<div class="q-actions" style="justify-content:center"><button class="btn sm" data-act="bank-now">Use a built-in question instead</button></div>' : '');
       } else {
         main = `
           <div class="why">${esc(cur.reason)}</div>
@@ -818,7 +853,7 @@
         <div class="exam-bar">
           <strong>Adaptive test</strong>
           <span class="muted">Question ${Math.min(n, s.length)} of ${s.length}</span>
-          <div class="bar" style="flex:1;min-width:80px"><span style="width:${pct(s.items.length, s.length)}%"></span></div>
+          <div class="bar" style="flex:1;min-width:80px"><span style="width:${pct(items.length, s.length)}%"></span></div>
           <span class="small"><strong>${correct}/${items.length}</strong> correct${run >= 3 ? ` · ${run} in a row` : ''}</span>
           <button class="btn sm" data-act="end">End session</button>
         </div>
@@ -871,6 +906,7 @@
       if (act === 'check') check();
       if (act === 'next') advance();
       if (act === 'retry') { pending = null; advance(); }
+      if (act === 'bank-now') useBankNow();
       if (act === 'report') report();
       if (act === 'end') finish();
       if (act === 'again') { summary = null; drawSetup(); }
@@ -897,6 +933,7 @@
     };
     if (f.domain !== 'all') f.section = SECTION_OF[f.domain];
 
+    const direct = getQ(params.get('q'));   // a specific question to retry
     const seen = new Set();
     const session = { n: 0, ok: 0 };
     let pool = [], cur = null, st = null;
@@ -933,6 +970,7 @@
         note = aiFailed(e?.code);
         return bankPick(t, seen);
       });
+      p.catch(() => {});   // a cancelled prefetch nobody waits for is not an error
       pending = p;
       return p;
     }
@@ -1032,6 +1070,8 @@
         for (let i = state.attempts.length - 1; i >= 0; i--) {
           if (state.attempts[i].id === cur.id) { state.attempts.splice(i, 1); break; }
         }
+        session.n--;
+        if (isCorrect(cur, st.resp)) session.ok--;
         save();
         note = 'Thanks. This question won\'t count toward your stats.';
         draw();
@@ -1057,7 +1097,7 @@
     }
 
     const onAI = () => {
-      if (ai.state === 'ready' && f.source === 'bank' && !session.n && !f.mode.match(/missed|flagged/) && !(st && answered(st.resp))) {
+      if (ai.state === 'ready' && f.source === 'bank' && !session.n && !direct && !f.mode.match(/missed|flagged/) && !(st && answered(st.resp))) {
         f.source = 'ai';
         return reset();
       }
@@ -1066,7 +1106,6 @@
     ai.listeners.add(onAI);
 
     buildPool();
-    const direct = getQ(params.get('q'));
     if (direct) { cur = direct; st = { resp: null, revealed: false }; seen.add(direct.id); draw(); } else pick();
     return () => { ai.listeners.delete(onAI); ctl?.abort(); };
   }
@@ -1336,7 +1375,7 @@
     const byDiff = { easy: { n: 0, ok: 0 }, medium: { n: 0, ok: 0 }, hard: { n: 0, ok: 0 } };
     for (const x of state.attempts) {
       const m = meta(x);
-      if (!m) continue;
+      if (!m || !byDiff[m.f]) continue;
       byDiff[m.f].n++;
       if (x.ok) byDiff[m.f].ok++;
     }
