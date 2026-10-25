@@ -106,7 +106,15 @@
     return out + esc(s.slice(last));
   }
   // Rough plain-text version of a formula, for short previews.
-  const plain = text => String(text ?? '').replace(MATH_RE, (_, a, b) => (a ?? b).replace(/\\[a-z]+/gi, ' ').replace(/[{}]/g, '').replace(/\s+/g, ' ').trim());
+  const plainTex = t => t
+    .replace(/\\(?:begin|end)\{[a-z*]+\}/gi, ' ').replace(/\\\\/g, ', ').replace(/&/g, '')
+    .replace(/\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}/g, '$1/$2')
+    .replace(/\\sqrt/g, '√').replace(/\\pi\b/g, 'π').replace(/\^\\circ/g, '°')
+    .replace(/\\(?:le|leq)\b/g, '≤').replace(/\\(?:ge|geq)\b/g, '≥').replace(/\\(?:ne|neq)\b/g, '≠')
+    .replace(/\\(?:times|cdot)\b/g, '×').replace(/\\(sin|cos|tan|log|ln)\b/g, '$1 ')
+    .replace(/\\[a-z]+/gi, ' ').replace(/[{}]/g, '');
+  const plain = text => String(text ?? '').replace(MATH_RE, (_, a, b) => plainTex(a ?? b))
+    .replace(/\s+/g, ' ').replace(/\s+([,.?;:])/g, '$1').trim();
   const words = text => plain(text).split(/\s+/).filter(Boolean).length;
   const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -542,6 +550,8 @@
 
   // ---------- Question rendering & interaction ----------
 
+  // Difficulty as filled answer bubbles: one for easy, two for medium, three for hard.
+  const diffHTML = d => `<span class="diff" title="${esc(d)}"><span class="sr">${esc(d)}</span>${[0, 1, 2].map(i => `<i class="${i <= (DIFF[d] ?? 0) + 1 ? 'on' : ''}"></i>`).join('')}</span>`;
   const FLAG_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V4h11l-1.5 4L16 12H5"/></svg>';
 
   // Renders a question the way the test lays it out. `st` is { resp, revealed, elim }.
@@ -552,7 +562,7 @@
       ${o.num != null ? `<span class="q-num">${o.num}</span>` : ''}
       ${o.flag != null ? `<button class="mark ${o.flag ? 'on' : ''}" data-act="flag" aria-pressed="${!!o.flag}">${FLAG_SVG}<span>${o.flag ? 'Marked for review' : 'Mark for review'}</span></button>` : ''}
       <span class="spacer"></span>
-      <span class="q-meta">${esc(q.skill || q.domain)} · ${esc(q.difficulty[0].toUpperCase() + q.difficulty.slice(1))}</span>
+      <span class="q-meta">${esc(q.skill || q.domain)}</span>${diffHTML(q.difficulty)}
     </header>`;
     const passage = q.passage ? `<div class="passage">${rich(q.passage)}</div>` : '';
     const table = q.table ? `<div class="table-wrap q-table"><table>${q.table.caption ? `<caption>${rich(q.table.caption)}</caption>` : ''}<thead><tr>${q.table.head.map(h => `<th>${rich(h)}</th>`).join('')}</tr></thead><tbody>${q.table.rows.map(r => `<tr>${r.map(c => `<td>${rich(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '';
@@ -694,55 +704,56 @@
 
     const resume = state.adaptive && state.adaptive.items.filter(i => !i.void).length < state.adaptive.length;
 
+    // Position on the 400–1600 score scale, as a percentage of its width.
+    const onScale = v => Math.max(0, Math.min(100, (v - 400) / 12));
+    const testDate = days == null ? '<a href="#/settings">Set a date</a>' : days > 0 ? plural(days, 'day') : days === 0 ? 'Today' : '<a href="#/settings">Passed</a>';
+    const needs = '<span class="muted small">5 answers needed</span>';
+
     el.innerHTML = `
-      <div class="page-head">
-        <div>
-          <h1>${hello}${p.name ? ', ' + esc(p.name) : ''}</h1>
-          <p>${days == null ? '<a href="#/settings">Set your test date and target score</a> so practice aims at your goal.' : days > 0 ? `${plural(days, 'day')} until your SAT. Aiming for ${p.targetScore}.` : days === 0 ? 'Test day. You\'ve got this.' : 'Your test date has passed. <a href="#/settings">Set a new one</a>.'}</p>
+      <section class="report">
+        <div class="report-main">
+          <h1 class="report-hello">${hello}${p.name ? ', ' + esc(p.name) : ''}</h1>
+          <p class="report-label">Predicted SAT score</p>
+          <div class="score-xl">${total ?? '<span class="score-none">No score yet</span>'}</div>
+          <div class="scale" role="img" aria-label="${total ? `Predicted ${total}, goal ${p.targetScore}, on the 400 to 1600 scale` : `Goal ${p.targetScore} on the 400 to 1600 scale`}">
+            ${total ? `<span class="scale-mark you" style="left:${onScale(total)}%"><b>You</b></span>` : ''}
+            <span class="scale-mark goal" style="left:${onScale(p.targetScore)}%"><b>Goal ${p.targetScore}</b></span>
+            <span class="scale-end">400</span><span class="scale-end right">1600</span>
+          </div>
+          <dl class="parts">
+            <div><dt>Reading and Writing</dt><dd>${rw ?? needs}</dd></div>
+            <div><dt>Math</dt><dd>${m ?? needs}</dd></div>
+            <div><dt>Test date</dt><dd>${testDate}</dd></div>
+          </dl>
         </div>
-        <div class="row">
-          ${due ? `<a class="btn" href="#/adaptive?start=review">Review ${plural(due, 'mistake')}</a>` : '<a class="btn" href="#/exams">Mock exam</a>'}
-          <a class="btn primary" href="#/adaptive">${resume ? 'Resume studying' : 'Start studying'}</a>
+        <div class="report-actions">
+          <a class="btn primary big" href="#/adaptive">${resume ? 'Resume studying' : 'Start studying'}</a>
+          ${due ? `<a class="btn big" href="#/adaptive?start=review">Review ${plural(due, 'mistake')}</a>` : '<a class="btn big" href="#/exams">Take a mock exam</a>'}
+          <p class="small muted">${total ? 'Your score updates from your last 40 answers in each section, weighted by difficulty.' : 'Answer at least 5 questions in each section to see a predicted score.'}</p>
         </div>
-      </div>
+      </section>
 
-      <div class="grid stats">
-        <div class="card">
-          <div class="stat-label">Predicted score</div>
-          <div class="stat-value">${total ?? '—'}</div>
-          <div class="stat-sub">${total ? `R&W ${rw} · Math ${m} · goal ${p.targetScore}` : 'Answer 5+ questions in each section'}</div>
-        </div>
-        <div class="card">
-          <div class="stat-label">Practice streak</div>
-          <div class="stat-value">${plural(st, 'day')}</div>
-          <div class="stat-sub">Practice daily to keep it going</div>
-        </div>
-        <div class="card">
-          <div class="stat-label">Today</div>
-          <div class="stat-value">${today}<span class="muted" style="font-size:18px"> / ${goal}</span></div>
-          <div class="bar ${today >= goal ? 'ok' : ''}"><span style="width:${Math.min(100, pct(today, goal))}%"></span></div>
-        </div>
-        <a class="card stat-link" href="#/review">
-          <div class="stat-label">Mistakes to review</div>
-          <div class="stat-value">${due}</div>
-          <div class="stat-sub">${all ? `${pct(correct, all)}% accuracy overall` : 'Missed questions come back here'}</div>
-        </a>
-      </div>
+      <dl class="ledger">
+        <div><dt>Streak</dt><dd>${st}<small>${st === 1 ? 'day' : 'days'}</small></dd></div>
+        <div><dt>Today</dt><dd>${today}<small>of ${goal}</small></dd></div>
+        <div><dt><a href="#/review">Mistakes due</a></dt><dd>${due}</dd></div>
+        <div><dt>Accuracy</dt><dd>${all ? pct(correct, all) + '<small>%</small>' : '<small>None yet</small>'}</dd></div>
+      </dl>
 
-      <div class="grid two">
+      <div class="grid two home-cols">
         <div class="card" id="daily">
-          <div class="card-head"><h2>Question of the day</h2><span class="muted">${fmtDate(Date.now())}</span></div>
+          <div class="card-head"><h2>Question of the day</h2><span class="muted small">${fmtDate(Date.now())}</span></div>
           <div id="daily-q">${questionHTML(dq, daily)}</div>
           ${daily.revealed ? '' : '<div class="q-actions"><button class="btn primary" id="daily-check">Check answer</button></div>'}
         </div>
         <div>
           <div class="card">
-            <div class="card-head"><h2>Activity</h2><span class="muted">Last 16 weeks</span></div>
+            <div class="card-head"><h2>Activity</h2><span class="muted small">Last 16 weeks</span></div>
             <div class="heatmap">${cells}</div>
-            <div class="legend">Less <span class="sw" style="background:var(--surface-2)"></span><span class="sw" style="background:color-mix(in srgb,var(--accent) 30%,var(--surface-2))"></span><span class="sw" style="background:color-mix(in srgb,var(--accent) 55%,var(--surface-2))"></span><span class="sw" style="background:color-mix(in srgb,var(--accent) 80%,var(--surface-2))"></span><span class="sw" style="background:var(--accent)"></span> More</div>
+            <div class="legend">Fewer <span class="sw"></span><span class="sw l1"></span><span class="sw l2"></span><span class="sw l3"></span><span class="sw l4"></span> More</div>
           </div>
           <div class="card">
-            <div class="card-head"><h2>Focus areas</h2><a class="small" href="#/diagnostics">Full diagnostics</a></div>
+            <div class="card-head"><h2>Focus areas</h2><a class="small" href="#/diagnostics">Diagnostics</a></div>
             ${focus}
           </div>
         </div>
@@ -978,13 +989,13 @@
         <div class="grid two">
           <div class="card stack">
             <h2>Section</h2>
-            <div class="option-grid">
+            <div class="option-grid list">
               ${opt('section', 'mix', 'Mixed', 'Both sections')}
               ${opt('section', 'rw', SECTIONS.rw, 'Reading & Writing only')}
               ${opt('section', 'math', SECTIONS.math, 'Math only')}
             </div>
             <h2 style="margin-top:20px">Length</h2>
-            <div class="option-grid">
+            <div class="option-grid list">
               ${opt('length', 10, '10 questions', 'About 15 minutes')}
               ${opt('length', 20, '20 questions', 'About 30 minutes')}
               ${opt('length', 30, '30 questions', 'About 45 minutes')}
@@ -999,7 +1010,7 @@
           <div class="card">
             <div class="card-head"><h2>What SatStat knows about you</h2><a class="small" href="#/review">${plural(memory.filter(m => !m.mastered).length, 'concept')} in memory</a></div>
             ${levelBars(ALL_DOMAINS, ab)}
-            ${weakSkills.length ? `<p class="small muted" style="margin:16px 0 6px">Weakest skills so far</p><div class="chips">${weakSkills.map(([k, v]) => `<span class="chip diff-hard">${esc(k)} · ${pct(v.ok, v.n)}%</span>`).join('')}</div>` : ''}
+            ${weakSkills.length ? `<p class="small muted" style="margin:16px 0 6px">Weakest skills so far</p><div class="chips">${weakSkills.map(([k, v]) => `<span class="chip diff-hard">${esc(k)} <b>${pct(v.ok, v.n)}%</b></span>`).join('')}</div>` : ''}
             <p class="small muted">Each bar is your chance of getting a medium question right. Anything you miss comes back as a similar question later in the session, then again after 1, 3 and 7 days.</p>
           </div>
         </div>
@@ -1041,7 +1052,8 @@
           <strong>${s.section === 'review' ? 'Mistake review' : 'Study'}</strong>
           <span class="muted">${Math.min(Math.max(1, num), s.length)} of ${s.length}</span>
           <div class="bar" style="flex:1;min-width:80px"><span style="width:${pct(items.length, s.length)}%"></span></div>
-          <span class="small"><strong>${correct}/${items.length}</strong> correct${run >= 3 ? ` · ${run} in a row` : ''}</span>
+          <span class="small"><strong>${correct}/${items.length}</strong> correct</span>
+          ${run >= 3 ? `<span class="run">${run} in a row</span>` : ''}
           <button class="btn sm" data-act="end">End</button>
         </div>
         ${note || cur?.note ? `<div class="notice">${esc(note || cur.note)}</div>` : ''}
@@ -1072,7 +1084,7 @@
           <div class="row"><a class="btn" href="#/review">Mistakes</a><button class="btn primary" data-act="again">Study again</button></div></div>
         <div class="grid two">
           <div class="card"><div class="stat-label">Score</div><div class="score-big">${correct}<span class="muted" style="font-size:20px"> / ${items.length}</span></div>
-            <p class="small muted">${pct(correct, items.length)}% correct${reinforced ? ` · ${plural(reinforced, 'earlier mistake')} answered right this time` : ''}</p></div>
+            <p class="small muted">${pct(correct, items.length)}% correct.${reinforced ? ` You got ${plural(reinforced, 'earlier mistake')} right this time.` : ''}</p></div>
           <div class="card"><div class="card-head"><h2>How your levels moved</h2></div>
             ${rows ? `<div class="table-wrap"><table><thead><tr><th>Domain</th><th class="num">Correct</th><th class="num">Level</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No answers recorded.</p>'}</div>
         </div>
@@ -1383,7 +1395,7 @@
             ${opt('size', 'module', 'Full module', 'Up to 27 R&W and 22 Math questions, like one real SAT module')}
           </div>
           <div class="row" style="margin-top:20px">
-            <span class="muted">${p.n} questions · ${Math.round(p.sec / 60)} minutes (real SAT pacing)</span>
+            <span class="muted">${p.n} questions in ${Math.round(p.sec / 60)} minutes, at real SAT pacing</span>
             <span class="spacer"></span>
             <button class="btn primary" data-act="start">Start exam</button>
           </div>
@@ -1428,7 +1440,7 @@
       const review = ex.qs.map((q, i) => {
         const r = ex.st[i].resp;
         const ok = answered(r) && isCorrect(q, r);
-        return `<details class="review"><summary><span class="dot ${ok ? 'ok' : 'bad'}"></span>Question ${i + 1} <span class="muted small">${esc(q.skill || q.domain)}${answered(r) ? '' : ' · unanswered'}</span></summary>${questionHTML(q, { resp: r, revealed: true })}</details>`;
+        return `<details class="review"><summary><span class="dot ${ok ? 'ok' : 'bad'}"></span>Question ${i + 1} <span class="muted small">${esc(q.skill || q.domain)}</span>${answered(r) ? '' : '<span class="chip">Unanswered</span>'}</summary>${questionHTML(q, { resp: r, revealed: true })}</details>`;
       }).join('');
       const max = Object.keys(ex.per).length * 800;
       el.innerHTML = `
@@ -1578,7 +1590,7 @@
     const bar = (label, s, link) => {
       const a = pct(s.ok, s.n);
       const cls = !s.n ? '' : a >= 80 ? 'ok' : a >= 50 ? 'warn' : 'bad';
-      return `<div class="focus-item"><div class="row"><span class="small"><strong>${esc(label)}</strong></span><span class="small muted">${s.n ? `${a}% · ${s.ok}/${s.n}` : 'No data'}</span></div>
+      return `<div class="focus-item"><div class="row"><span class="small"><strong>${esc(label)}</strong></span><span class="small muted">${s.n ? `<b class="num-strong">${a}%</b> ${s.ok} of ${s.n}` : 'No data'}</span></div>
         <div class="row"><div class="bar ${cls}" style="flex:1"><span style="width:${s.n ? a : 0}%"></span></div>${link ? `<a class="btn sm" href="${link}">Practice</a>` : ''}</div></div>`;
     };
     const sectionCard = sec => {
@@ -1657,8 +1669,8 @@
     const doneCount = tasks.filter(t => t.auto || done.has(t.id)).length;
 
     el.innerHTML = `
-      <div class="page-head"><div><h1>Schedule</h1><p>${days == null ? 'Add your test date in <a href="#/settings">Settings</a> for a phased plan.' : days >= 0 ? `${plural(days, 'day')} to go${phase ? ` · Phase: ${phase[0]}` : ''}` : 'Your test date has passed. <a href="#/settings">Update it</a>.'}</p></div></div>
-      ${phase ? `<div class="card"><strong>${phase[0]}.</strong> <span class="muted">${phase[1]}</span></div>` : ''}
+      <div class="page-head"><div><h1>Schedule</h1><p>${days == null ? 'Add your test date in <a href="#/settings">Settings</a> for a phased plan.' : days >= 0 ? `${plural(days, 'day')} to go.` : 'Your test date has passed. <a href="#/settings">Update it</a>.'}</p></div></div>
+      ${phase ? `<div class="card phase"><strong>Phase: ${phase[0]}.</strong> <span class="muted">${phase[1]}</span></div>` : ''}
       <div class="grid two" style="margin-top:16px">
         <div class="card"><div class="card-head"><h2>Today's plan</h2><span class="muted">${doneCount}/${tasks.length} done</span></div>${taskHTML}</div>
         <div class="card"><div class="card-head"><h2>This week</h2><span class="muted">Adapts to your weak spots</span></div>${week}</div>
@@ -1781,11 +1793,6 @@
     window.scrollTo(0, 0);
   }
 
-  try { if (localStorage.getItem('satstat:collapsed') === '1') app.classList.add('collapsed'); } catch { /* ignore */ }
-  $('#collapse').addEventListener('click', () => {
-    app.classList.toggle('collapsed');
-    try { localStorage.setItem('satstat:collapsed', app.classList.contains('collapsed') ? '1' : '0'); } catch { /* ignore */ }
-  });
   $('#menu').addEventListener('click', () => app.classList.add('drawer'));
   $('#scrim').addEventListener('click', () => app.classList.remove('drawer'));
 
