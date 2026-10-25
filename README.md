@@ -14,7 +14,7 @@ A free SAT prep dashboard. No accounts, no paywall, no backend: it is a static s
 - **Schedule**: a daily checklist and a 7-day plan that adapt to your weakest domains and to how close your test date is.
 - **Settings**: name, test date, target score, daily goal, and export/import/reset of your progress.
 
-Works on phones (slide-out menu) and follows your system's light/dark mode.
+Math is typeset like the real test (roots, fractions, exponents, systems of equations) with [KaTeX](https://katex.org). Works on phones (slide-out menu) and follows your system's light/dark mode.
 
 ## Run it locally
 
@@ -44,7 +44,7 @@ Questions live in `js/questions.js`. Add an object to the array:
   difficulty: 'medium',          // 'easy' | 'medium' | 'hard'
   passage: 'Optional text…',     // shown above the question
   table: { caption: '…', head: ['…'], rows: [['…']] },   // optional data table
-  prompt: 'What is the value of x?',
+  prompt: 'If \\(3x + 7 = 22\\), what is the value of \\(x\\)?',   // math is LaTeX in \\( \\) or \\[ \\]
   choices: ['1', '2', '3', '4'], answer: 2,   // multiple choice (answer is the index)
   // or, for a grid-in: type: 'spr', accept: ['7.5']
   explanation: 'Why the answer is right.'

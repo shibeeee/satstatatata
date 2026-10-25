@@ -539,3 +539,10 @@ details.solution div { white-space: pre-line; margin-top: 8px; color: var(--mute
 
 .up { color: var(--ok); font-weight: 600; }
 .down { color: var(--bad); font-weight: 600; }
+
+/* ---------- Math ---------- */
+
+.katex { font-size: 1.12em; }
+.katex-display { font-size: 1.12em; margin: .6em 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.choice { align-items: center; }
+.tex-raw { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .92em; }

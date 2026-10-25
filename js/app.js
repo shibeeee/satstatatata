@@ -68,6 +68,24 @@
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  // Math is LaTeX between \( \) (inline) or \[ \] (on its own line), typeset with KaTeX.
+  const MATH_RE = /\\\((.+?)\\\)|\\\[(.+?)\\\]/gs;
+  const texHTML = (src, display) => window.katex.renderToString(src, { displayMode: display, throwOnError: true });
+  // Escapes text and typesets its math. Without KaTeX (offline), shows the raw formula.
+  // `big` typesets inline math at full size (fractions in answer choices, like the SAT).
+  function rich(text, big = false) {
+    const s = String(text ?? '');
+    let out = '', last = 0;
+    for (const m of s.matchAll(MATH_RE)) {
+      out += esc(s.slice(last, m.index));
+      const src = m[1] ?? m[2];
+      try { out += texHTML(big && m[2] == null ? '\\displaystyle ' + src : src, m[2] != null); } catch { out += `<span class="tex-raw">${esc(src)}</span>`; }
+      last = m.index + m[0].length;
+    }
+    return out + esc(s.slice(last));
+  }
+  // Rough plain-text version of a formula, for short previews.
+  const plain = text => String(text ?? '').replace(MATH_RE, (_, a, b) => (a ?? b).replace(/\\[a-z]+/gi, ' ').replace(/[{}]/g, '').replace(/\s+/g, ' ').trim());
   const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   const shuffle = arr => {
@@ -298,7 +316,9 @@
       '- Match the style, length and rigor of real digital SAT questions, but write entirely new content. Never copy real SAT or College Board questions.',
       '- Facts about real people, places, events and science must be accurate. If you are not certain of a fact, use a generic or clearly fictional subject instead (for example "a team of researchers").',
       '- Exactly one answer is correct. Wrong choices must be tempting (common mistakes, misreadings) but clearly wrong on careful reading.',
-      '- Plain text only: no Markdown and no LaTeX. Write math with Unicode (x², √, π, ≤, ≥, −, ·, °) and put each equation on its own line using \\n.',
+      '- No Markdown. Write ALL math (variables, expressions, equations, fractions, roots, exponents, angles) in LaTeX: inline between \\( and \\), and an equation or system shown on its own line between \\[ and \\] (use \\begin{aligned} ... \\end{aligned} for a system). Example: "\\[\\sqrt{3x + 4} = x\\]What is the sum of all solutions to the equation above?" Never use $ for math; dollar amounts are plain text like $40.',
+      '- This is JSON, so write every backslash twice: "\\\\(\\\\frac{3}{4}x\\\\)", "\\\\[x^2 - 5 = 0\\\\]".',
+      '- The prompt is a clean question exactly as it would appear on the test: no notes, hints, caveats or instructions about how to answer.',
       '- The choices will be shuffled, so the explanation must refer to choices by their content, never by letter.',
       `- Choose a topic different from these recent ones: ${state.aiTopics.slice(-25).join('; ') || 'none yet'}.`,
       '- Work out "solution" before "answer", then check that exactly one choice is correct. If not, fix the question before replying.',
@@ -310,8 +330,42 @@
     ].filter(line => line !== null).join('\n');
   }
 
+  // A LaTeX command written with a single backslash in JSON turns into a control
+  // character (\frac -> form feed + "rac", \times -> tab + "imes"). Put the backslash back.
+  const fixTex = s => s.replace(/\f/g, '\\f').replace(/\x08/g, '\\b').replace(/\t/g, '\\t').replace(/\r/g, '\\r')
+    .replace(/\n(?=(?:eq|e|ot|otin|u|abla|eg|i|mid)\b)/g, '\\n');
+  const fixAll = v => typeof v === 'string' ? fixTex(v) : Array.isArray(v) ? v.map(fixAll)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fixAll(x)])) : v;
+
+  // Recovers a reply whose JSON broke on single backslashes such as "\(" or "\sqrt".
+  function recoverJSON(text) {
+    const a = text.indexOf('{'), b = text.lastIndexOf('}');
+    if (a < 0 || b <= a) return null;
+    // In a reply that failed to parse, every backslash is literal LaTeX except one escaping a quote.
+    const doubled = text.slice(a, b + 1).replace(/\\(?!")/g, '\\\\');
+    try {
+      // After doubling, a real newline escape reads as a literal "\n": turn it back into a newline
+      // unless it starts a LaTeX command such as \neq.
+      return fixAll(JSON.parse(doubled, (k, v) => typeof v === 'string'
+        ? v.replace(/\\n(?!(?:eq|e|ot|otin|u|abla|eg|i|mid)\b)/g, '\n') : v));
+    } catch { return null; }
+  }
+
+  // Every formula must typeset, and delimiters must pair up.
+  function mathOK(s) {
+    if (typeof s !== 'string') return true;
+    if ((s.match(/\\\(/g) || []).length !== (s.match(/\\\)/g) || []).length) return false;
+    if ((s.match(/\\\[/g) || []).length !== (s.match(/\\\]/g) || []).length) return false;
+    if (!window.katex) return true;
+    for (const m of s.matchAll(MATH_RE)) {
+      try { texHTML(m[1] ?? m[2], m[2] != null); } catch { return false; }
+    }
+    return true;
+  }
+
   function validateAI(r, t, format) {
     if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+    r = fixAll(r);
     const str = (v, max) => (typeof v === 'string' && v.trim() && v.length <= max ? v.trim() : null);
     const prompt = str(r.prompt, 1500);
     const explanation = str(r.explanation, 2000);
@@ -344,12 +398,20 @@
       q.choices = order.map(i => choices[i]);
       q.answer = order.indexOf(ans);
     }
+    const texts = [q.passage, q.prompt, q.explanation, q.solution, ...(q.choices || []), ...(q.table ? [q.table.caption, ...q.table.head, ...q.table.rows.flat()] : [])];
+    if (!texts.every(mathOK)) return null;
     return q;
   }
 
   async function generate(t, signal) {
     const format = SECTION_OF[t.domain] === 'math' && Math.random() < 0.25 ? 'spr' : 'mc';
-    const raw = await ai.fn.json(buildPrompt(t, format), { signal, cache: false, modelTier: 'default', effort: 'low' });
+    let raw;
+    try {
+      raw = await ai.fn.json(buildPrompt(t, format), { signal, cache: false, modelTier: 'default', effort: 'low' });
+    } catch (e) {
+      if (e?.code !== 'invalid_json' || !e.text) throw e;
+      raw = recoverJSON(e.text);
+    }
     const q = validateAI(raw, t, format);
     if (!q) throw { code: 'invalid_question' };
     state.generated[q.id] = q;
@@ -365,8 +427,8 @@
 
   function questionHTML(q, st) {
     const chips = `<div class="chips"><span class="chip">${SECTIONS[q.section]}</span><span class="chip" title="${esc(q.domain)}">${esc(q.skill || q.domain)}</span><span class="chip diff-${q.difficulty}">${q.difficulty}</span>${q.source === 'ai' ? '<span class="chip ai">Written by Claude</span>' : ''}</div>`;
-    const passage = q.passage ? `<div class="passage">${esc(q.passage)}</div>` : '';
-    const table = q.table ? `<div class="table-wrap q-table"><table>${q.table.caption ? `<caption>${esc(q.table.caption)}</caption>` : ''}<thead><tr>${q.table.head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${q.table.rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '';
+    const passage = q.passage ? `<div class="passage">${rich(q.passage)}</div>` : '';
+    const table = q.table ? `<div class="table-wrap q-table"><table>${q.table.caption ? `<caption>${rich(q.table.caption)}</caption>` : ''}<thead><tr>${q.table.head.map(h => `<th>${rich(h)}</th>`).join('')}</tr></thead><tbody>${q.table.rows.map(r => `<tr>${r.map(c => `<td>${rich(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '';
     let body;
     if (q.type === 'spr') {
       body = `<div class="spr"><input class="input" data-spr value="${esc(st.resp ?? '')}" ${st.revealed ? 'disabled' : ''} placeholder="Type your answer, e.g. 7.5 or 15/2" autocomplete="off" aria-label="Your answer"></div>`;
@@ -378,17 +440,17 @@
           if (i === q.answer) cls += ' correct';
           else if (st.resp === i) cls += ' wrong';
         }
-        return `<button class="${cls}" data-choice="${i}" ${st.revealed ? 'disabled' : ''}><span class="letter">${'ABCD'[i]}</span><span>${esc(c)}</span></button>`;
+        return `<button class="${cls}" data-choice="${i}" ${st.revealed ? 'disabled' : ''}><span class="letter">${'ABCD'[i]}</span><span>${rich(c, true)}</span></button>`;
       }).join('') + '</div>';
     }
     let fb = '';
     if (st.revealed) {
       const ok = isCorrect(q, st.resp);
       const ans = q.type === 'spr' && !ok ? `The answer is ${esc(q.accept[0])}. ` : '';
-      fb = `<div class="feedback ${ok ? 'ok' : 'bad'}"><strong>${ok ? 'Correct.' : answered(st.resp) ? 'Not quite.' : 'Not answered.'}</strong> ${ans}${esc(q.explanation)}</div>` +
-        (q.solution ? `<details class="solution"><summary>Full worked solution</summary><div>${esc(q.solution)}</div></details>` : '');
+      fb = `<div class="feedback ${ok ? 'ok' : 'bad'}"><strong>${ok ? 'Correct.' : answered(st.resp) ? 'Not quite.' : 'Not answered.'}</strong> ${ans}${rich(q.explanation)}</div>` +
+        (q.solution ? `<details class="solution"><summary>Full worked solution</summary><div>${rich(q.solution)}</div></details>` : '');
     }
-    return `<article class="question">${chips}${passage}${table}<p class="prompt">${esc(q.prompt)}</p>${body}${fb}</article>`;
+    return `<article class="question">${chips}${passage}${table}<div class="prompt">${rich(q.prompt)}</div>${body}${fb}</article>`;
   }
 
   const loadingHTML = text => `<div class="loading"><span class="spinner" aria-hidden="true"></span><span>${esc(text)}</span></div>`;
@@ -1301,7 +1363,7 @@
           <div class="card"><div class="card-head"><h2>Recent mistakes</h2><span class="muted">Still wrong on last try</span></div>
             ${missed.length ? `<div class="table-wrap"><table><tbody>${missed.map(id => {
               const q = getQ(id);
-              return `<tr><td><span class="small">${esc(q.skill || q.domain)}</span><br><span class="muted small">${esc((q.passage || q.prompt).slice(0, 70))}…</span></td><td class="num"><a class="btn sm" href="#/practice?q=${id}">Retry</a></td></tr>`;
+              return `<tr><td><span class="small">${esc(q.skill || q.domain)}</span><br><span class="muted small">${esc(plain(q.passage || q.prompt).slice(0, 70))}…</span></td><td class="num"><a class="btn sm" href="#/practice?q=${id}">Retry</a></td></tr>`;
             }).join('')}</tbody></table></div>` : '<div class="empty"><p>No outstanding mistakes.</p></div>'}
           </div>
         </div>
