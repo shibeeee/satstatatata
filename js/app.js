@@ -22,11 +22,112 @@
     'Problem-Solving & Data Analysis': ['Ratios, rates and proportions', 'Percentages', 'One-variable data', 'Two-variable data', 'Probability', 'Inference from samples', 'Evaluating statistical claims'],
     'Geometry & Trigonometry': ['Area and volume', 'Lines, angles and triangles', 'Right triangles and trigonometry', 'Circles']
   };
-  // Approximate share of each section's questions per domain on the digital SAT.
-  const DOMAIN_SHARE = {
-    'Craft & Structure': 0.28, 'Information & Ideas': 0.26, 'Standard English Conventions': 0.26, 'Expression of Ideas': 0.20,
-    'Algebra': 0.35, 'Advanced Math': 0.35, 'Problem-Solving & Data Analysis': 0.15, 'Geometry & Trigonometry': 0.15
-  };
+  // The specific question patterns the real test uses, with how often each appears
+  // (share: percent of its section's questions) and, where known, how often it repeats
+  // across test dates (repeat) and how often it is hard (hard). English repeat rates and
+  // math shares come from The Test Advantage's analysis of 2024–2026 question banks
+  // (thetestadvantage.com); shares marked "est." are estimates within the official domain weights.
+  const PATTERNS = [
+    // Reading & Writing: Craft & Structure (28%)
+    { id: 'wic', domain: 'Craft & Structure', skill: 'Words in context', share: 14.4, repeat: 0.41, label: 'Words in context',
+      guide: 'Test one precise, moderately advanced word (like "tentative", "corroborate", "undermine", "novel", "conventional", "arbitrary") whose meaning is pinned down by a contrast ("Although…", "but") or a restatement after a colon. Wrong choices fit the topic but not the logic, and one is a near-synonym with the wrong shade of meaning.' },
+    { id: 'purpose', domain: 'Craft & Structure', skill: 'Text structure and purpose', share: 9.6, label: 'Main purpose, structure or function of a sentence',
+      guide: 'Wrong choices are too broad, too narrow, or describe something the text does not do.' },
+    { id: 'crosstext', domain: 'Craft & Structure', skill: 'Cross-text connections', share: 4, label: 'Cross-text response',
+      guide: 'Text 2 qualifies, challenges or extends a specific claim in Text 1; the right answer names that exact relationship.' },
+    // Information & Ideas (26%)
+    { id: 'central', domain: 'Information & Ideas', skill: 'Central ideas and details', share: 6, label: 'Main idea or stated detail',
+      guide: 'Wrong choices repeat words from the text but distort its point, or state a detail as if it were the main idea.' },
+    { id: 'evidence-text', domain: 'Information & Ideas', skill: 'Command of evidence: textual', share: 7, label: 'Finding that supports or weakens a claim',
+      guide: 'A researcher states a hypothesis; the right finding directly tests its key prediction. Wrong choices are related but irrelevant to that prediction. If you use a literary quotation, write your own original excerpt and attribute it only to "a novel" or "a poem", never to a real author.' },
+    { id: 'evidence-quant', domain: 'Information & Ideas', skill: 'Command of evidence: quantitative', share: 6.5, label: 'Data from a table completes a claim',
+      guide: 'Exactly one choice is both accurate to the table and relevant to the claim. Include one choice that is accurate but irrelevant and one that misreads the table.' },
+    { id: 'inference', domain: 'Information & Ideas', skill: 'Inferences', share: 6.5, label: 'Most logical completion',
+      guide: 'The blank completes a chain of reasoning in the passage. Wrong choices go beyond the evidence or reverse it.' },
+    // Standard English Conventions (26%)
+    { id: 'b-clauses', domain: 'Standard English Conventions', skill: 'Boundaries', share: 5, label: 'Joining two independent clauses',
+      guide: 'Test semicolon or period versus a comma splice or run-on, often with a transition word ("however", "therefore") after the boundary.' },
+    { id: 'b-supplement', domain: 'Standard English Conventions', skill: 'Boundaries', share: 4.5, label: 'Supplementary elements and appositives',
+      guide: 'A nonessential phrase must be set off by a matching pair: two commas or two dashes. The other half of the pair already appears in the sentence.' },
+    { id: 'b-colon', domain: 'Standard English Conventions', skill: 'Boundaries', share: 2.5, label: 'Colons before a list or explanation',
+      guide: 'A colon must follow a complete independent clause.' },
+    { id: 'b-none', domain: 'Standard English Conventions', skill: 'Boundaries', share: 2, label: 'No punctuation needed',
+      guide: 'The right answer has no punctuation: between subject and verb, before a restrictive element, or between a title and a name ("author Toni Morrison").' },
+    { id: 'f-agree', domain: 'Standard English Conventions', skill: 'Form, structure and sense', share: 4, label: 'Subject-verb agreement',
+      guide: 'Separate the subject from its verb with a long prepositional phrase whose noun has the other number.' },
+    { id: 'f-pronoun', domain: 'Standard English Conventions', skill: 'Form, structure and sense', share: 2.5, label: 'Pronoun agreement',
+      guide: 'Test its/their/it\'s/they\'re with a clearly singular or plural antecedent.' },
+    { id: 'f-verb', domain: 'Standard English Conventions', skill: 'Form, structure and sense', share: 3, label: 'Verb tense and finite verbs',
+      guide: 'Either the sentence needs a main (finite) verb and three choices are -ing or "to" forms, or the tense must match a time marker.' },
+    { id: 'f-possessive', domain: 'Standard English Conventions', skill: 'Form, structure and sense', share: 1.5, label: 'Plurals and possessives',
+      guide: 'Choices differ only by apostrophes and the letter s.' },
+    { id: 'f-modifier', domain: 'Standard English Conventions', skill: 'Form, structure and sense', share: 1, label: 'Dangling modifiers',
+      guide: 'An opening modifying phrase must be followed directly by the noun it describes.' },
+    // Expression of Ideas (20%)
+    { id: 't-contrast', domain: 'Expression of Ideas', skill: 'Transitions', share: 2.8, repeat: 0.52, label: 'Transition: contrast',
+      guide: 'The right answer is a contrast word ("However,", "In contrast,", "Nevertheless,"). Wrong choices show cause, addition or example.' },
+    { id: 't-cause', domain: 'Expression of Ideas', skill: 'Transitions', share: 2.1, repeat: 0.43, label: 'Transition: cause and effect',
+      guide: 'The right answer shows a result ("Therefore,", "As a result,", "Consequently,"). Wrong choices show contrast, addition or example.' },
+    { id: 't-example', domain: 'Expression of Ideas', skill: 'Transitions', share: 1.6, repeat: 0.48, label: 'Transition: example or illustration',
+      guide: 'The sentence after the blank gives a specific instance of the general claim before it ("For example,", "For instance,").' },
+    { id: 't-addition', domain: 'Expression of Ideas', skill: 'Transitions', share: 1.5, label: 'Transition: addition (est.)',
+      guide: 'The sentence adds a further point in the same direction ("Moreover,", "Additionally,", "Furthermore,").' },
+    { id: 't-other', domain: 'Expression of Ideas', skill: 'Transitions', share: 1.5, label: 'Transition: similarity, sequence or concession (est.)',
+      guide: 'Use "Similarly,", "Likewise,", "Later,", "Finally,", "Granted," or "Still," as the right answer.' },
+    { id: 'synthesis', domain: 'Expression of Ideas', skill: 'Rhetorical synthesis', share: 10.5, label: 'Rhetorical synthesis from notes',
+      guide: 'Goals like "emphasize a similarity", "emphasize a difference", "introduce the study to an unfamiliar audience" or "present the findings". Every choice is true to the notes; only one does the stated goal.' },
+    // Math: Algebra
+    { id: 'lin-model', domain: 'Algebra', skill: 'Linear functions', share: 8, hard: 0.29, label: 'Linear models: slope and intercept in context',
+      guide: 'Interpret m and b in y = mx + b for a real situation, or build the model from a table or two points.' },
+    { id: 'lin-lines', domain: 'Algebra', skill: 'Linear equations in two variables', share: 6, hard: 0.29, label: 'Lines: slope, intercepts, parallel and perpendicular',
+      guide: 'Use slope = (y₂ − y₁)/(x₂ − x₁), standard form slope −A/B, equal slopes for parallel lines and negative reciprocals for perpendicular.' },
+    { id: 'lin-eq', domain: 'Algebra', skill: 'Linear equations in one variable', share: 7, hard: 0.19, label: 'Linear equations and number of solutions',
+      guide: 'Solve, or decide whether an equation like ax + 3 = 5x − b has one, no or infinitely many solutions.' },
+    { id: 'ineq', domain: 'Algebra', skill: 'Linear inequalities', share: 5, hard: 0.38, label: 'Inequalities in context',
+      guide: '"At least" means ≥, "at most" means ≤; flip the sign when multiplying or dividing by a negative.' },
+    { id: 'systems', domain: 'Algebra', skill: 'Systems of linear equations', share: 5, hard: 0.4, label: 'Systems of equations',
+      guide: 'Solve a system, or use slopes: different slopes give one solution, same slope with different intercepts none, the same line infinitely many.' },
+    // Math: Advanced Math
+    { id: 'exp', domain: 'Advanced Math', skill: 'Nonlinear functions', share: 7.7, hard: 0.41, label: 'Exponential growth and decay',
+      guide: 'Use y = a·bˣ, y = a(1 + r)ᵗ or y = a(1 − r)ᵗ; interpret a and b; compare a fixed-amount (linear) change with a fixed-factor (exponential) change; percent change over several periods.' },
+    { id: 'quad-func', domain: 'Advanced Math', skill: 'Nonlinear functions', share: 6.6, hard: 0.44, label: 'Quadratic functions and graphs',
+      guide: 'Vertex form gives vertex (h, k), factored form gives x-intercepts, c is the y-intercept, axis of symmetry x = −b/(2a); maximum or minimum values.' },
+    { id: 'expr', domain: 'Advanced Math', skill: 'Equivalent expressions', share: 5.4, hard: 0.26, label: 'Expressions and polynomials',
+      guide: 'Exponent rules, difference of squares, perfect-square expansion, or matching coefficients of equivalent expressions.' },
+    { id: 'quad-eq', domain: 'Advanced Math', skill: 'Nonlinear equations', share: 5.3, hard: 0.66, label: 'Quadratic equations',
+      guide: 'Factoring, the quadratic formula, the discriminant (2, 1 or 0 real solutions), or the sum of roots −b/a and product c/a.' },
+    { id: 'func', domain: 'Advanced Math', skill: 'Nonlinear functions', share: 4.7, hard: 0.11, label: 'Function notation and transformations',
+      guide: 'Evaluate f(a), compose values, or shift graphs: f(x) + k moves up k, f(x − h) moves right h.' },
+    { id: 'extraneous', domain: 'Advanced Math', skill: 'Nonlinear equations', share: 3, hard: 0.7, label: 'Radical or rational equations and extraneous solutions',
+      guide: 'Solve by squaring or clearing denominators, then check for extraneous solutions; or count how many solutions a system or equation has.' },
+    // Math: Problem-Solving & Data Analysis
+    { id: 'percent', domain: 'Problem-Solving & Data Analysis', skill: 'Percentages', share: 4, hard: 0.58, label: 'Percentages and percent change',
+      guide: 'Percent change = (new − original)/original; a 20% increase multiplies by 1.2 and undoing it divides by 1.2; successive changes multiply.' },
+    { id: 'ratio', domain: 'Problem-Solving & Data Analysis', skill: 'Ratios, rates and proportions', share: 3.5, label: 'Ratios, rates and unit conversion (est.)',
+      guide: 'Proportions and multi-step unit conversions.' },
+    { id: 'one-var', domain: 'Problem-Solving & Data Analysis', skill: 'One-variable data', share: 3, label: 'Mean, median, range and spread (est.)',
+      guide: 'Effects of adding or removing a value or an outlier on mean and median; comparing spread.' },
+    { id: 'two-var', domain: 'Problem-Solving & Data Analysis', skill: 'Two-variable data', share: 2, label: 'Lines of best fit and models from data (est.)',
+      guide: 'Interpret a best-fit line from a table or equation, or choose linear versus exponential.' },
+    { id: 'prob', domain: 'Problem-Solving & Data Analysis', skill: 'Probability', share: 1.5, label: 'Probability from two-way tables (est.)',
+      guide: 'Conditional probability: watch which group is the denominator.' },
+    { id: 'sampling', domain: 'Problem-Solving & Data Analysis', skill: 'Inference from samples', share: 0.8, label: 'Estimating from a sample and margin of error (est.)',
+      guide: 'Scale a sample proportion up to a population, or read what a margin of error does and does not say.' },
+    { id: 'inference-stats', domain: 'Problem-Solving & Data Analysis', skill: 'Evaluating statistical claims', share: 0.7, label: 'Which conclusion a study supports (est.)',
+      guide: 'Random sampling allows generalizing to the population sampled; random assignment allows cause-and-effect claims.' },
+    // Math: Geometry & Trigonometry
+    { id: 'area', domain: 'Geometry & Trigonometry', skill: 'Area and volume', share: 5.1, hard: 0.52, label: 'Area, perimeter and volume',
+      guide: 'Includes scaling: multiplying lengths by k multiplies area by k² and volume by k³.' },
+    { id: 'triangles', domain: 'Geometry & Trigonometry', skill: 'Lines, angles and triangles', share: 4.1, label: 'Triangles, angles and similarity',
+      guide: 'Angle relationships with parallel lines, triangle angle sums, and similar-triangle ratios.' },
+    { id: 'trig', domain: 'Geometry & Trigonometry', skill: 'Right triangles and trigonometry', share: 2.7, label: 'Right triangles and trigonometry',
+      guide: '30-60-90 sides x, x√3, 2x; 45-45-90 sides s, s, s√2; SOH-CAH-TOA; sin x° = cos(90 − x)°.' },
+    { id: 'circles', domain: 'Geometry & Trigonometry', skill: 'Circles', share: 2.4, label: 'Circle equations, arcs and sectors',
+      guide: '(x − h)² + (y − k)² = r², often after completing the square; arc length and sector area as fractions of the circle; radians.' }
+  ];
+  const PATTERN = Object.fromEntries(PATTERNS.map(p => [p.id, p]));
+  // AI questions carry their pattern; built-in ones get the most common pattern of their skill.
+  const patternOf = q => q.pattern || PATTERNS.find(p => p.skill === q.skill)?.id || null;
   const SECTION_OF = Object.fromEntries(ALL_DOMAINS.map(d => [d, DOMAINS.rw.includes(d) ? 'rw' : 'math']));
   const DIFF = { easy: -1, medium: 0, hard: 1 };
   const WEIGHT = { easy: 1, medium: 1.5, hard: 2 };
@@ -43,7 +144,7 @@
 
   const KEY = 'satstat:v1';
   const defaults = () => ({
-    profile: { name: '', testDate: '', dailyGoal: 10, targetScore: 1400 },
+    profile: { name: '', testDate: '', dailyGoal: 10, targetScore: 1400, report: null },  // report: { rw, math, bands: { domain: [low, high] } }
     attempts: [],         // { id, ok, t, m, s, d, k, f }  m = practice | daily | exam | adaptive
     review: [],           // flagged question ids
     vocab: {},            // word -> 'learning' | 'known'
@@ -160,7 +261,7 @@
   function meta(x) {
     if (x.d) return x;
     const q = getQ(x.id);
-    return q ? { s: q.section, d: q.domain, k: q.skill, f: q.difficulty } : null;
+    return q ? { s: q.section, d: q.domain, k: q.skill, f: q.difficulty, p: patternOf(q) } : null;
   }
 
   // Records an answer and updates the mistake memory. `origin` is the missed question a
@@ -169,9 +270,9 @@
     const id = origin || q.id;
     const prev = state.mistakes[id] ? { ...state.mistakes[id] } : null;
     const now = Date.now();
-    state.attempts.push({ id: q.id, ok, t: now, m: mode, s: q.section, d: q.domain, k: q.skill, f: q.difficulty });
+    state.attempts.push({ id: q.id, ok, t: now, m: mode, s: q.section, d: q.domain, k: q.skill, f: q.difficulty, p: patternOf(q) });
     if (!ok) {
-      state.mistakes[id] = { d: q.domain, k: q.skill, f: q.difficulty, stage: 0, misses: (prev?.misses || 0) + 1, due: now + DAY, last: now };
+      state.mistakes[id] = { d: q.domain, k: q.skill, f: q.difficulty, p: patternOf(q), stage: 0, misses: (prev?.misses || 0) + 1, due: now + DAY, last: now };
     } else if (prev && !prev.mastered && (origin || prev.due <= now)) {
       // Right on a reinforcement or a due review: space the next one further out.
       const stage = prev.stage + 1;
@@ -261,8 +362,22 @@
 
   // Elo-style ability per domain, replayed from every answer ever given.
   // A correct answer on a question harder than your level raises it more.
+  // A PSAT/SAT score report sets where each domain starts: a domain's score band if given,
+  // else its section score. 500 maps to level 0 and every 150 points is one step.
+  function reportScore(d) {
+    const rep = state.profile.report;
+    if (!rep) return null;
+    const band = rep.bands?.[d];
+    if (band) return (band[0] + band[1]) / 2;
+    return rep[SECTION_OF[d]] || (rep.total ? rep.total / 2 : null);
+  }
+  const startLevel = d => {
+    const v = reportScore(d);
+    return v ? Math.max(-2, Math.min(2, (v - 500) / 150)) : 0;
+  };
+
   function abilities() {
-    const r = Object.fromEntries(ALL_DOMAINS.map(d => [d, 0]));
+    const r = Object.fromEntries(ALL_DOMAINS.map(d => [d, startLevel(d)]));
     for (const x of state.attempts) {
       const m = meta(x);
       if (!m || !(m.d in r) || !(m.f in DIFF)) continue;
@@ -276,12 +391,54 @@
   // A higher target score pushes questions harder sooner: 1500+ scores are won on hard questions.
   const stretch = () => {
     const t = state.profile.targetScore || 1400;
-    return t >= 1500 ? 0.5 : t >= 1350 ? 0.25 : 0;
+    return t >= 1500 ? 0.3 : t >= 1350 ? 0.15 : 0;
   };
+  // Module 2 level: students who already reach the harder second module (PSAT/SAT around
+  // 1300+, or aiming for 1450+) gain most from its hard questions, so practice skips easy ones.
+  function module2() {
+    const level = state.profile.level || 'auto';
+    if (level !== 'auto') return level === 'module2';
+    const r = state.profile.report;
+    const total = r ? (r.total || (r.rw && r.math ? r.rw + r.math : 0)) : 0;
+    return total >= 1300 || (state.profile.targetScore || 0) >= 1450;
+  }
+  const pickLevel = r => {
+    if (!module2()) return levelFor(r);
+    const hard = Math.max(0.6, 1 / (1 + Math.exp(-2.5 * (r - 0.8))));
+    return Math.random() < hard ? 'hard' : 'medium';
+  };
+
+  // A mix of difficulties centered on your level: around level 0 mostly medium, a strong
+  // domain mostly hard with some medium, a weak one mostly easy and medium.
   const levelFor = r => {
-    const x = r + (Math.random() - 0.5) * 0.8;
-    return x < -0.45 ? 'easy' : x > 0.45 ? 'hard' : 'medium';
+    const hard = 1 / (1 + Math.exp(-2.5 * (r - 0.8)));
+    const easy = 1 / (1 + Math.exp(-2.5 * (-r - 0.8)));
+    const x = Math.random();
+    return x < hard ? 'hard' : x < hard + easy ? 'easy' : 'medium';
   };
+
+  // How much a domain needs work: low mastery, and a big gap between its implied score and
+  // half the target score, both raise it.
+  function need(d, ab) {
+    const implied = 500 + 150 * ab[d];
+    const gap = Math.max(0, (state.profile.targetScore || 1400) / 2 - implied) / 100;
+    return (1.3 - mastery(ab[d])) * (1 + gap);
+  }
+
+  // Picks a question pattern: common and often-repeated patterns first, weighted toward the
+  // domains that need work and the patterns you miss. `final` leans harder on repeats.
+  function pickPattern(domains, usable, ab, recent = [], final = false) {
+    const ps = PATTERNS.filter(p => domains.includes(p.domain) && usable(p));
+    if (!ps.length) return null;
+    const stats = groupStats('p');
+    return weighted(ps, ps.map(p => {
+      const st = stats[p.id];
+      const rep = 1 + (p.repeat ?? 0.28);
+      let w = p.share * rep * (final ? rep : 1) * need(p.domain, ab) * (1.3 - (st?.n ? st.ok / st.n : 0.5));
+      if (recent[recent.length - 1] === p.domain) w *= recent.length === 2 && recent[0] === p.domain ? 0.1 : 0.5;
+      return w;
+    }));
+  }
 
   // Weakest first; untried domains come first so they get explored.
   function weakDomains() {
@@ -392,6 +549,7 @@
       `Skill: ${t.skill}`,
       `Difficulty: ${t.difficulty}. ${DIFF_GUIDE[t.difficulty] || DIFF_GUIDE.medium}`,
       `Format: ${SKILL_GUIDE[t.skill] || MATH_GUIDE}`,
+      PATTERN[t.pattern] ? `Question pattern (one that recurs on recent tests): ${PATTERN[t.pattern].label}. ${PATTERN[t.pattern].guide}` : '',
       FIXED_STEMS[t.skill] ? `The prompt must be exactly: "${FIXED_STEMS[t.skill]}"` : '',
       section === 'math'
         ? (format === 'spr'
@@ -493,7 +651,7 @@
     }
     const q = {
       id: 'ai-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      source: 'ai', section, domain: t.domain, skill: t.skill, difficulty: t.difficulty || 'medium',
+      source: 'ai', section, domain: t.domain, skill: t.skill, pattern: t.pattern || null, difficulty: t.difficulty || 'medium',
       passage, prompt, explanation,
       topic: str(r.topic, 80) || t.skill,
       solution: typeof r.solution === 'string' ? r.solution.trim().slice(0, 3000) : ''
@@ -529,9 +687,33 @@
     return q;
   }
 
-  async function generate(t, signal) {
-    const format = t.ref ? (t.ref.type === 'spr' ? 'spr' : 'mc')
-      : SECTION_OF[t.domain] === 'math' && Math.random() < 0.25 ? 'spr' : 'mc';
+  // A second, independent Claude call solves the question from scratch before a student
+  // sees it. Returns false if its answer differs from the key or it judges the question unsound.
+  async function verify(q, signal) {
+    const shown = {
+      passage: q.passage || '', table: q.table || null, question: q.prompt,
+      ...(q.type === 'spr' ? { format: 'grid-in: the answer is a single number' } : { choices: q.choices.map((c, i) => `${'ABCD'[i]}) ${c}`) })
+    };
+    let r;
+    try {
+      r = await ai.fn.json([
+        'You are checking a practice question written for the digital SAT before a student sees it. Solve it yourself from scratch, then judge it.',
+        'It is "sound" only if: it reads like a real SAT question, the passage and question make sense, any facts are accurate, it can be answered from what is given, and exactly one choice is clearly best (for a grid-in, exactly one number).',
+        'Reply with only JSON: {"answer": "the letter A-D, or the number for a grid-in", "sound": true or false, "issue": "one sentence if not sound"}',
+        '',
+        JSON.stringify(shown)
+      ].join('\n'), { signal, cache: false, modelTier: 'default', effort: 'low' });
+    } catch (e) {
+      if (e?.code === 'cancelled' || AI_OFF_CODES.has(e?.code)) throw e;
+      return true;   // the check itself failed: don't throw away a question that passed validation
+    }
+    if (!r || r.sound === false) return false;
+    if (q.type === 'spr') return isCorrect(q, String(r.answer ?? ''));
+    const letter = String(r.answer ?? '').toUpperCase().match(/[A-D]/);
+    return !!letter && 'ABCD'.indexOf(letter[0]) === q.answer;
+  }
+
+  async function writeQuestion(t, format, signal) {
     let raw;
     try {
       raw = await ai.fn.json(buildPrompt(t, format), { signal, cache: false, modelTier: 'default', effort: 'low' });
@@ -539,7 +721,18 @@
       if (e?.code !== 'invalid_json' || !e.text) throw e;
       raw = recoverJSON(e.text);
     }
-    const q = validateAI(raw, t, format);
+    return validateAI(raw, t, format);
+  }
+
+  // Writes a question, checks it independently, and rewrites it once if the check fails.
+  async function generate(t, signal) {
+    const format = t.ref ? (t.ref.type === 'spr' ? 'spr' : 'mc')
+      : SECTION_OF[t.domain] === 'math' && Math.random() < 0.25 ? 'spr' : 'mc';
+    let q = null;
+    for (let tries = 0; tries < 2 && !q; tries++) {
+      const draft = await writeQuestion(t, format, signal);
+      if (draft && await verify(draft, signal)) q = draft;
+    }
     if (!q) throw { code: 'invalid_question' };
     state.generated[q.id] = q;
     pruneGenerated(200);
@@ -710,6 +903,7 @@
     const needs = '<span class="muted small">5 answers needed</span>';
 
     el.innerHTML = `
+      ${days != null && days >= 0 && days <= 7 ? `<a class="card due-card testday-banner" href="#/testday"><span><strong>${days === 0 ? 'Your SAT is today.' : `Your SAT is in ${plural(days, 'day')}.`}</strong> Your final plan is ready: what to review, what to pack and how to pace it.</span><span class="btn primary">Open plan</span></a>` : ''}
       <section class="report">
         <div class="report-main">
           <h1 class="report-hello">${hello}${p.name ? ', ' + esc(p.name) : ''}</h1>
@@ -810,7 +1004,7 @@
       const ab = abilities();
 
       const f = s.followups.find(x => x.due <= pos && ok(x.d));
-      if (f) return { followup: f, origin: f.origin, domain: f.d, skill: f.k, difficulty: f.f, ref: getQ(f.ref) };
+      if (f) return { followup: f, origin: f.origin, domain: f.d, skill: f.k, pattern: f.p, difficulty: f.f, ref: getQ(f.ref) };
 
       const inSession = id => s.items.some(i => i.origin === id || i.id === id) || (cur && (cur.origin === id || cur.q.id === id));
       const due = dueMistakes().filter(([id, m]) => domains.includes(m.d) && !inSession(id));
@@ -819,22 +1013,16 @@
         const orig = getQ(id);
         // Without Claude, the original question itself comes back once it's due.
         if (!useAI && orig && !used.has(id)) return { q: orig, origin: id };
-        if (ok(m.d)) return { origin: id, domain: m.d, skill: m.k, difficulty: m.f || 'medium', ref: orig };
+        if (ok(m.d)) return { origin: id, domain: m.d, skill: m.k, pattern: m.p, difficulty: m.f || 'medium', ref: orig };
       }
       if (s.section === 'review') return null;
 
-      const cands = domains.filter(ok);
-      if (!cands.length) return null;
       const recent = s.items.slice(-2).map(i => i.d);
-      const domain = weighted(cands, cands.map(d => {
-        let w = DOMAIN_SHARE[d] * (1.3 - mastery(ab[d]));
-        if (recent[recent.length - 1] === d) w *= recent.length === 2 && recent[0] === d ? 0.1 : 0.5;
-        return w;
-      }));
-      const ss = skillStats();
-      const skills = SKILLS[domain].filter(k => useAI || BANK.some(q => q.skill === k && !used.has(q.id)));
-      const skill = weighted(skills, skills.map(k => 1.3 - (ss[k]?.n ? ss[k].ok / ss[k].n : 0.5)));
-      return { domain, skill, difficulty: levelFor(ab[domain] + stretch()) };
+      const final = s.section === 'final';
+      const p = pickPattern(domains, p => useAI || BANK.some(q => q.skill === p.skill && !used.has(q.id)), ab, recent, final);
+      if (!p) return null;
+      // Just before the test: a notch easier, to consolidate rather than strain.
+      return { domain: p.domain, skill: p.skill, pattern: p.id, difficulty: pickLevel(ab[p.domain] + (final && !module2() ? -0.3 : stretch())) };
     }
 
     // Turns a plan into a question: Claude writes it when available, otherwise the bank supplies one.
@@ -924,9 +1112,9 @@
       s.items.push({ id: q.id, origin: cur.origin, ok, resp: st.resp, d: q.domain, k: q.skill, f: q.difficulty, secs: Math.round((Date.now() - started) / 1000), undo });
       if (!ok) {
         // Reinforce quietly: a similar question comes back two questions from now.
-        const f = { key: q.id + ':' + s.shown, origin: cur.origin || q.id, ref: q.id, d: q.domain, k: q.skill, f: q.difficulty, due: s.shown + 3 };
+        const f = { key: q.id + ':' + s.shown, origin: cur.origin || q.id, ref: q.id, d: q.domain, k: q.skill, p: patternOf(q), f: q.difficulty, due: s.shown + 3 };
         s.followups.push(f);
-        if (aiUsable()) twins.set(f.key, aiCall({ domain: f.d, skill: f.k, difficulty: f.f, ref: q }));
+        if (aiUsable()) twins.set(f.key, aiCall({ domain: f.d, skill: f.k, pattern: f.p, difficulty: f.f, ref: q }));
       }
       save();
       draw();
@@ -982,7 +1170,7 @@
       const memory = Object.values(state.mistakes);
       const weakSkills = Object.entries(ss).filter(([, v]) => v.n >= 2).sort((a, b) => a[1].ok / a[1].n - b[1].ok / b[1].n).slice(0, 4);
       const opt = (k, v, title, sub) => `<button class="option ${opts[k] === v ? 'active' : ''}" data-opt="${k}" data-v="${v}"><strong>${title}</strong><span>${sub}</span></button>`;
-      const hist = state.adaptiveHistory.slice(-8).reverse().map(x => `<tr><td>${fmtDate(x.t)}</td><td>${x.section === 'mix' ? 'Mixed' : x.section === 'review' ? 'Mistake review' : SECTIONS[x.section]}</td><td class="num">${x.correct}/${x.total}</td><td class="num">${pct(x.correct, x.total)}%</td></tr>`).join('');
+      const hist = state.adaptiveHistory.slice(-8).reverse().map(x => `<tr><td>${fmtDate(x.t)}</td><td>${{ mix: 'Mixed', review: 'Mistake review', final: 'Final review' }[x.section] || SECTIONS[x.section]}</td><td class="num">${x.correct}/${x.total}</td><td class="num">${pct(x.correct, x.total)}%</td></tr>`).join('');
       el.innerHTML = `
         <div class="page-head"><div><h1>Study</h1><p>A test that adapts as you go: every answer is checked right away, and every next question is picked for you.</p></div></div>
         ${due ? `<div class="card due-card"><div><strong>${plural(due, 'mistake')} due for review.</strong> <span class="muted">You'll get a similar question for each one.</span></div><button class="btn primary" data-act="review">Review now</button></div>` : ''}
@@ -993,6 +1181,11 @@
               ${opt('section', 'mix', 'Mixed', 'Both sections')}
               ${opt('section', 'rw', SECTIONS.rw, 'Reading & Writing only')}
               ${opt('section', 'math', SECTIONS.math, 'Math only')}
+            </div>
+            <h2 style="margin-top:20px">Level</h2>
+            <div class="option-grid list">
+              <button class="option ${module2() ? 'active' : ''}" data-level="module2"><strong>Module 2 level</strong><span>Mostly hard questions, never easy. For 1300+ scorers.</span></button>
+              <button class="option ${module2() ? '' : 'active'}" data-level="match"><strong>Match my level</strong><span>Easy to hard, following your answers</span></button>
             </div>
             <h2 style="margin-top:20px">Length</h2>
             <div class="option-grid list">
@@ -1049,7 +1242,7 @@
 
       el.innerHTML = `
         <div class="exam-bar">
-          <strong>${s.section === 'review' ? 'Mistake review' : 'Study'}</strong>
+          <strong>${{ review: 'Mistake review', final: 'Final review' }[s.section] || 'Study'}</strong>
           <span class="muted">${Math.min(Math.max(1, num), s.length)} of ${s.length}</span>
           <div class="bar" style="flex:1;min-width:80px"><span style="width:${pct(items.length, s.length)}%"></span></div>
           <span class="small"><strong>${correct}/${items.length}</strong> correct</span>
@@ -1096,6 +1289,8 @@
     el.addEventListener('click', e => {
       const o = e.target.closest('[data-opt]');
       if (o) { opts[o.dataset.opt] = o.dataset.opt === 'length' ? Number(o.dataset.v) : o.dataset.v; return drawSetup(); }
+      const lv = e.target.closest('[data-level]');
+      if (lv) { state.profile.level = lv.dataset.level; save(); return drawSetup(); }
       if (cur && choiceClick(e, st, el)) return;
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'begin') begin(opts.section, opts.length);
@@ -1123,6 +1318,7 @@
     ai.listeners.add(onAI);
 
     if (s) advance();
+    else if (params.get('start') === 'final') begin('final', Math.min(40, Number(params.get('n')) || 20));
     else if (params.get('start') === 'review' && dueMistakes().length) begin('review', Math.min(20, dueMistakes().length));
     else draw();
     return () => { unkey(); ai.listeners.delete(onAI); ctls.forEach(c => c.abort()); };
@@ -1134,8 +1330,8 @@
       source: aiUsable() && !params.get('mode') && !direct ? 'ai' : 'bank',
       section: params.get('section') || 'all',
       domain: params.get('domain') || 'all',
-      skill: 'all',
-      difficulty: 'all',
+      skill: params.get('skill') || 'all',
+      difficulty: params.get('difficulty') || 'all',
       mode: params.get('mode') || 'all'
     };
     if (f.domain !== 'all') f.section = SECTION_OF[f.domain];
@@ -1162,9 +1358,8 @@
     function aiTarget() {
       const ab = abilities();
       const domains = f.domain !== 'all' ? [f.domain] : f.section === 'all' ? ALL_DOMAINS : DOMAINS[f.section];
-      const domain = weighted(domains, domains.map(d => DOMAIN_SHARE[d] * (1.3 - mastery(ab[d]))));
-      const skills = f.skill !== 'all' ? [f.skill] : SKILLS[domain];
-      return { domain, skill: skills[Math.floor(Math.random() * skills.length)], difficulty: f.difficulty !== 'all' ? f.difficulty : levelFor(ab[domain] + stretch()) };
+      const p = pickPattern(domains, p => f.skill === 'all' || p.skill === f.skill, ab) || pickPattern(domains, () => true, ab) || PATTERNS[0];
+      return { domain: p.domain, skill: p.skill, pattern: p.id, difficulty: f.difficulty !== 'all' ? f.difficulty : pickLevel(ab[p.domain] + stretch()) };
     }
 
     // Writes the next question in the background while the current one is on screen.
@@ -1242,7 +1437,7 @@
           <select class="input" data-f="section" aria-label="Section">${opt('all', 'All sections', f.section)}${opt('rw', SECTIONS.rw, f.section)}${opt('math', SECTIONS.math, f.section)}</select>
           <select class="input" data-f="domain" aria-label="Domain">${opt('all', 'All domains', f.domain)}${domains.map(d => opt(d, d, f.domain)).join('')}</select>
           ${f.domain !== 'all' ? `<select class="input" data-f="skill" aria-label="Skill">${opt('all', 'All skills', f.skill)}${SKILLS[f.domain].map(k => opt(k, k, f.skill)).join('')}</select>` : ''}
-          <select class="input" data-f="difficulty" aria-label="Difficulty">${opt('all', useAI ? 'Match my level' : 'Any difficulty', f.difficulty)}${opt('easy', 'Easy', f.difficulty)}${opt('medium', 'Medium', f.difficulty)}${opt('hard', 'Hard', f.difficulty)}</select>
+          <select class="input" data-f="difficulty" aria-label="Difficulty">${opt('all', useAI ? (module2() ? 'Module 2 level' : 'Match my level') : 'Any difficulty', f.difficulty)}${opt('easy', 'Easy', f.difficulty)}${opt('medium', 'Medium', f.difficulty)}${opt('hard', 'Hard', f.difficulty)}</select>
           ${useAI ? '' : `<select class="input" data-f="mode" aria-label="Which questions">${opt('all', 'All questions', f.mode)}${opt('new', 'Not yet answered', f.mode)}${opt('missed', 'Last answer wrong', f.mode)}${opt('flagged', 'Flagged for review', f.mode)}</select>`}
         </div>
         ${note ? `<div class="notice">${esc(note)}</div>` : ''}
@@ -1522,6 +1717,183 @@
       ${mastered.length ? `<div class="card"><div class="card-head"><h2>Mastered</h2></div>${table(mastered.slice(0, 30))}</div>` : ''}`;
   }
 
+  // The last two days before the test, then test morning: a checklist built from the most
+  // common question patterns and the domains that need the most work.
+  function testday(el) {
+    const p = state.profile;
+    const days = daysUntilTest();
+    const due = dueMistakes().length;
+    const ab = abilities();
+    const focus = ALL_DOMAINS.slice().sort((a, b) => need(b, ab) - need(a, ab)).slice(0, 3);
+    const doneKey = 'testday:' + (p.testDate || 'none');
+    const done = new Set(state.tasksDone[doneKey] || []);
+    const practiceLink = d => `#/practice?domain=${encodeURIComponent(d)}`;
+
+    const stages = [
+      { when: 2, title: 'Two days before', items: [
+        { id: 'final25', title: 'Final review: 25 questions', sub: `The question patterns that come up most on recent tests, weighted toward ${focus.join(', ')}${module2() ? ', at module 2 level' : ''}.`, href: '#/adaptive?start=final&n=25', go: 'Start' },
+        { id: 'mistakes', title: 'Go through your mistakes', sub: due ? `${plural(due, 'mistake')} due. Read each explanation, then retry it.` : 'Read the explanation for each one, then retry it.', href: due ? '#/adaptive?start=review' : '#/review', go: 'Open' },
+        ...focus.map((d, i) => ({ id: 'drill' + i, title: `Drill ${d}: 10 questions`, sub: i === 0 ? 'Your biggest gap to your target score.' : 'One of your three weakest areas.', href: practiceLink(d), go: 'Drill' })),
+        { id: 'pace', title: 'Time one module', sub: 'Mock exams, Full module: get a feel for about 71 seconds per Reading and Writing question and 95 per Math question.', href: '#/exams', go: 'Open' },
+        { id: 'bluebook', title: 'Finish exam setup in Bluebook', sub: 'Update Bluebook on the device you will test on and complete exam setup, which gives you your admission ticket.', href: 'https://bluebook.collegeboard.org', go: 'Bluebook', external: true }
+      ] },
+      { when: 1, title: 'The day before', items: [
+        { id: 'final15', title: 'Light review: 15 questions', sub: `Mostly the patterns that repeat most: transitions, words in context, linear and exponential functions${module2() ? ', at module 2 level' : ''}. Nothing new.`, href: '#/adaptive?start=final&n=15', go: 'Start' },
+        { id: 'rules', title: 'Read the rules sheet below', sub: 'About 10 minutes. These rules decide most Standard English Conventions and Advanced Math questions.' },
+        { id: 'pack', title: 'Pack tonight', sub: 'Admission ticket, photo ID, your device fully charged and its charger, pencils or pens for scratch work, water and a snack for the break.' },
+        { id: 'sleep', title: 'Stop by early evening and sleep 8 or more hours', sub: 'A rested brain is worth more than one more practice set.' }
+      ] },
+      { when: 0, title: 'Test morning', items: [
+        { id: 'warm', title: 'Breakfast, then a 5-question warm-up', sub: 'Easy questions only, just to switch on.', href: '#/practice?difficulty=easy', go: 'Warm up' },
+        { id: 'arrive', title: 'Arrive by 7:45 a.m.', sub: 'Your admission ticket has your test center address and any instructions from your center.' }
+      ] }
+    ];
+
+    const stageHTML = st => {
+      const isToday = days === st.when || (st.when === 2 && days > 2);
+      return `<section class="card stage ${isToday ? 'now' : ''} ${days != null && days < st.when ? 'past' : ''}">
+        <div class="card-head"><h2>${st.title}</h2>${isToday ? `<span class="chip today-chip">${days > 2 ? `Start now: ${plural(days, 'day')} left` : 'Today'}</span>` : ''}</div>
+        ${st.items.map(t => `<label class="task ${done.has(t.id) ? 'done' : ''}">
+          <input type="checkbox" data-task="${t.id}" ${done.has(t.id) ? 'checked' : ''}>
+          <div style="flex:1"><div class="task-title">${esc(t.title)}</div><div class="small muted">${esc(t.sub)}</div></div>
+          ${t.href ? `<a class="btn sm" href="${t.href}"${t.external ? ' target="_blank" rel="noopener"' : ''}>${t.go}</a>` : ''}
+        </label>`).join('')}
+      </section>`;
+    };
+
+    const top = sec => PATTERNS.filter(x => SECTION_OF[x.domain] === sec)
+      .sort((a, b) => b.share * (1 + (b.repeat ?? 0.28)) - a.share * (1 + (a.repeat ?? 0.28))).slice(0, 5);
+    const nov7 = new Date('2026-11-07T00:00') >= new Date(dayKey() + 'T00:00');
+    const when = days == null ? 'Set your test date to get your plan.'
+      : days > 0 ? `Your SAT is in ${plural(days, 'day')}.` : days === 0 ? 'Your SAT is today.' : 'Your test date has passed.';
+
+    el.innerHTML = `
+      <div class="page-head"><div><h1>Test day plan</h1><p>${when} ${p.report ? '' : '<a href="#/settings">Add your PSAT score report</a> so the plan targets your weakest areas.'}</p></div>
+        <div class="row">
+          ${nov7 ? '<button class="btn" data-date="2026-11-07">My SAT is Nov 7</button>' : ''}
+          <button class="btn" data-date="2026-12-05">My SAT is Dec 5</button>
+          <input class="input" type="date" id="td-date" value="${esc(p.testDate)}" aria-label="Test date">
+        </div></div>
+      <div class="focus-band card"><strong>Your focus:</strong> ${focus.map(d => `<a href="${practiceLink(d)}">${esc(d)}</a>`).join(', ')}.
+        <span class="muted">${p.report ? 'From your score report and your answers since.' : 'From your answers so far.'}</span></div>
+      <div class="stages">${stages.map(stageHTML).join('')}</div>
+
+      <div class="grid two">
+        <section class="card">
+          <div class="card-head"><h2>During the test</h2></div>
+          <ul class="tips">
+            <li><strong>Answer every question.</strong> Wrong answers cost nothing, so never leave one blank.</li>
+            <li><strong>Bank module 1, win module 2.</strong> A strong first module sends you to the harder second module, which top scores need, so don't rush module 1 into careless mistakes. If module 2 feels harder, that is a good sign: it means you got there.</li>
+            <li><strong>Keep moving.</strong> Mark for review and move on after about 1.5 minutes in Reading and Writing or 2.5 in Math, then come back.</li>
+            <li><strong>Use Desmos.</strong> Graph both sides of an equation, find intersections of a system, read a vertex.</li>
+            <li><strong>Reading and Writing:</strong> read the question first, then predict the answer from the passage before looking at the choices.</li>
+            <li><strong>Use the 10-minute break</strong> to eat, drink and reset before Math.</li>
+          </ul>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Pacing</h2></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Section</th><th class="num">Per module</th><th class="num">Time</th><th class="num">Per question</th></tr></thead>
+            <tbody>
+              <tr><td>Reading and Writing, 2 modules</td><td class="num">27</td><td class="num">32 min</td><td class="num">71 s</td></tr>
+              <tr><td>Math, 2 modules</td><td class="num">22</td><td class="num">35 min</td><td class="num">95 s</td></tr>
+            </tbody>
+          </table></div>
+          <p class="small muted">A 10-minute break comes between the two sections.</p>
+        </section>
+      </div>
+
+      <div class="grid two" id="rules">
+        <section class="card rules">
+          <div class="card-head"><h2>Reading and Writing rules</h2></div>
+          <ul class="tips">
+            <li><strong>Transitions:</strong> name the relationship first. Contrast: However, Nevertheless, In contrast. Cause: Therefore, As a result, Consequently. Example: For example, For instance. Addition: Moreover, Additionally. Similarity: Similarly, Likewise.</li>
+            <li><strong>Two complete sentences</strong> need a period or a semicolon; a comma alone is a comma splice. Between them, write <em>; however,</em>.</li>
+            <li><strong>Colons</strong> come only after a complete sentence.</li>
+            <li><strong>Extra information</strong> takes a matching pair: two commas or two dashes, never one of each.</li>
+            <li><strong>No comma</strong> between a subject and its verb, or in "author Toni Morrison".</li>
+            <li><strong>Agreement:</strong> find the real subject (skip the "of …" phrase). <em>Its</em> is singular, <em>their</em> is plural. A sentence needs a main verb; an <em>-ing</em> word alone is not one.</li>
+            <li><strong>Opening phrases</strong> describe the noun that comes right after the comma.</li>
+            <li><strong>Words in context:</strong> find the clue in the passage and predict a word before reading the choices.</li>
+            <li><strong>Notes questions:</strong> read the goal first, then pick the choice that does that goal, not the one with the most facts.</li>
+          </ul>
+        </section>
+        <section class="card rules">
+          <div class="card-head"><h2>Math rules</h2></div>
+          <ul class="tips">
+            <li>${rich('Slope \\(m = \\frac{y_2 - y_1}{x_2 - x_1}\\). In \\(y = mx + b\\), \\(b\\) is the starting value and \\(m\\) the change per unit. Parallel lines share a slope; perpendicular slopes multiply to \\(-1\\).')}</li>
+            <li>${rich('\\(ax + b = cx + d\\) has no solution when \\(a = c\\) and \\(b \\neq d\\), and infinitely many when \\(a = c\\) and \\(b = d\\).')}</li>
+            <li>${rich('Exponential: growth \\(y = a(1 + r)^t\\), decay \\(y = a(1 - r)^t\\). Linear adds a fixed amount; exponential multiplies by a fixed factor.')}</li>
+            <li>${rich('Vertex form \\(y = a(x - h)^2 + k\\) has vertex \\((h, k)\\). Axis of symmetry \\(x = -\\frac{b}{2a}\\).')}</li>
+            <li>${rich('Discriminant \\(b^2 - 4ac\\): positive gives 2 real solutions, zero gives 1, negative gives none. Sum of roots \\(-\\frac{b}{a}\\), product \\(\\frac{c}{a}\\).')}</li>
+            <li>${rich('Radical equations: square both sides, then check every answer in the original equation.')}</li>
+            <li>${rich('Percent change \\(= \\frac{\\text{new} - \\text{original}}{\\text{original}}\\). Undo a 20% increase by dividing by 1.2.')}</li>
+            <li>${rich('30-60-90 sides \\(x, x\\sqrt{3}, 2x\\); 45-45-90 sides \\(s, s, s\\sqrt{2}\\); \\(\\sin x^\\circ = \\cos(90 - x)^\\circ\\).')}</li>
+            <li>${rich('Circle: \\((x - h)^2 + (y - k)^2 = r^2\\). Scaling lengths by \\(k\\) scales area by \\(k^2\\) and volume by \\(k^3\\).')}</li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="grid two">
+        <section class="card rules">
+          <div class="card-head"><h2>Desmos tricks</h2><span class="small muted">The calculator built into Bluebook</span></div>
+          <ul class="tips">
+            <li><strong>Solve any equation by typing it as written</strong>, like <code>3(x-2)=2x+7</code>. Desmos draws a vertical line at each solution; click it to read the value.</li>
+            <li><strong>Systems:</strong> type both equations and click where they cross. No crossing means no solution; one line on top of the other means infinitely many.</li>
+            <li><strong>Quadratics:</strong> graph <code>y=x^2-6x+5</code> and click the gray points for the vertex, the x-intercepts and the y-intercept. The vertex is the maximum or minimum.</li>
+            <li><strong>"For what value of k" questions:</strong> type the equation with <code>k</code> and add the slider Desmos offers. Drag until the condition holds (the graphs touch once, the lines become parallel), then check the choices.</li>
+            <li><strong>Equivalent expressions:</strong> graph the original and each choice. The one that lands exactly on top of it is equivalent.</li>
+            <li><strong>Functions:</strong> define <code>f(x)=x^2-3x+2</code>, then type <code>f(4)</code> or <code>f(x+2)</code>.</li>
+            <li><strong>Data:</strong> <code>mean([4,8,10,14,19])</code> and <code>median([...])</code> work. For a table of points, add a table and type <code>y_1~mx_1+b</code> for the best-fit line, or <code>y_1~ab^(x_1)</code> for exponential.</li>
+            <li><strong>Inequalities:</strong> type <code>y&gt;2x+3</code> to shade the region, then type a point like <code>(2,9)</code> to see if it falls inside.</li>
+            <li><strong>Circles:</strong> type the equation as given, even an unsimplified one like <code>x^2+y^2-8x+6y=11</code>, and read the center and radius off the graph.</li>
+            <li><strong>Grid-ins:</strong> a long decimal is fine if it fills the space, like <code>.6667</code> for two thirds.</li>
+          </ul>
+        </section>
+        <section class="card rules">
+          <div class="card-head"><h2>Reading and Writing patterns</h2><span class="small muted">Shortcuts that hold up again and again</span></div>
+          <ul class="tips">
+            <li><strong>Two choices that mean the same thing can't both be right,</strong> so both are out. This settles many transition and words in context questions.</li>
+            <li><strong>A period and a semicolon do the same job.</strong> If two choices put them in the same spot with the same words, the answer is a third choice.</li>
+            <li><strong>Match the opener:</strong> an interruption that starts with a dash ends with a dash; one that starts with a comma ends with a comma.</li>
+            <li><strong>Cross out "of …" phrases</strong> to find the real subject before choosing a verb.</li>
+            <li><strong>Notes questions:</strong> skip the notes. Read the goal, then pick the choice that does exactly that goal. "Emphasize a similarity" needs both things and a word like "both" or "similarly".</li>
+            <li><strong>Transitions:</strong> cover the choices and say the link in plain words (but, so, for example, also), then find its match.</li>
+            <li><strong>Words in context:</strong> put your own word in the blank before reading the choices, then take the closest one. Skip words stronger than the passage supports.</li>
+            <li><strong>Completions and inferences:</strong> the safest claim that the evidence fully supports wins. "Always", "proves" and "all" are usually traps.</li>
+            <li><strong>Main idea and purpose:</strong> wrong choices often reuse the passage's exact words to say something it didn't.</li>
+            <li><strong>Data questions:</strong> first cross out choices that misread the table, then pick the one that supports the specific claim.</li>
+            <li><strong>Bank time:</strong> grammar, transitions and notes questions come in the second half of each module and are the fastest. You can jump to them with the question navigator, then return.</li>
+          </ul>
+        </section>
+      </div>
+
+      <section class="card">
+        <div class="card-head"><h2>What comes up most</h2><span class="small muted">From The Test Advantage's analysis of 2024–2026 question banks</span></div>
+        <div class="grid two">
+          ${['rw', 'math'].map(sec => `<div><h3 style="margin-bottom:8px">${SECTIONS[sec]}</h3><div class="table-wrap"><table><tbody>${top(sec).map(x => `<tr><td>${esc(x.label.replace(' (est.)', ''))}</td><td class="num">${x.share}%</td><td class="num small muted">${x.repeat ? `repeats ${Math.round(x.repeat * 100)}%` : ''}</td></tr>`).join('')}</tbody></table></div></div>`).join('')}
+        </div>
+        <p class="small"><strong>Repeat most often on recent tests:</strong> ${PATTERNS.filter(x => x.repeat).sort((a, b) => b.repeat - a.repeat).map(x => `${esc(x.label.replace('Transition: ', 'Transitions: '))} (${Math.round(x.repeat * 100)}%)`).join(', ')}, against 28% for English questions overall.</p>
+        <p class="small muted">Share is the percent of that section's questions. Exact repeats are uncommon, and most change the numbers, so learning each pattern's rule matters more than memorizing questions.</p>
+      </section>`;
+
+    el.addEventListener('change', e => {
+      const id = e.target.dataset.task;
+      if (id) {
+        const set = new Set(state.tasksDone[doneKey] || []);
+        e.target.checked ? set.add(id) : set.delete(id);
+        state.tasksDone[doneKey] = [...set];
+        save();
+        e.target.closest('.task').classList.toggle('done', e.target.checked);
+      }
+      if (e.target.id === 'td-date' && e.target.value) { p.testDate = e.target.value; save(); render(); }
+    });
+    el.addEventListener('click', e => {
+      const b = e.target.closest('[data-date]');
+      if (b) { p.testDate = b.dataset.date; save(); render(); }
+    });
+  }
+
   function vocab(el) {
     let filter = 'unknown';
     let deck = [], i = 0, flipped = false;
@@ -1689,6 +2061,7 @@
 
   function settings(el) {
     const p = state.profile;
+    const rep = p.report;
     el.innerHTML = `
       <div class="page-head"><div><h1>Settings</h1><p>Everything is stored in this browser. No account needed.</p></div></div>
       <form class="card" id="profile">
@@ -1701,6 +2074,19 @@
         </div>
         <p class="small muted">A target of 1350 or more makes study sessions reach for harder questions sooner.</p>
         <div class="q-actions"><button class="btn primary" type="submit">Save</button><span class="muted small" id="saved"></span></div>
+      </form>
+      <form class="card" id="report">
+        <div class="card-head"><h2>Your PSAT or SAT score report</h2></div>
+        <p class="small muted" style="margin-top:0">Study starts from these levels and focuses on the areas furthest below your target score, until your own answers take over. Type each band as it appears on your report, like 610-670. Leave out anything you don't have.</p>
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+          <label class="field">Total score<input class="input" id="r-total" name="total" type="number" min="400" max="1600" step="10" value="${esc(rep?.total ?? '')}" placeholder="e.g. 1380"></label>
+          <label class="field">Reading and Writing score<input class="input" id="r-rw" name="rw" type="number" min="200" max="800" step="10" value="${esc(rep?.rw ?? '')}" placeholder="e.g. 640"></label>
+          <label class="field">Math score<input class="input" id="r-math" name="math" type="number" min="200" max="800" step="10" value="${esc(rep?.math ?? '')}" placeholder="e.g. 680"></label>
+        </div>
+        <div class="grid two" style="margin-top:14px">
+          ${['rw', 'math'].map(sec => `<div class="stack">${DOMAINS[sec].map(d => `<label class="field">${esc(d)}<input class="input" id="band-${ALL_DOMAINS.indexOf(d)}" name="band:${esc(d)}" value="${rep?.bands?.[d] ? rep.bands[d].join('-') : ''}" placeholder="Score band, e.g. 610-670" autocomplete="off"></label>`).join('')}</div>`).join('')}
+        </div>
+        <div class="q-actions"><button class="btn primary" type="submit">Save score report</button><button class="btn ghost" type="button" id="report-clear">Clear</button><span class="small" id="report-saved"></span></div>
       </form>
       <div class="card">
         <div class="card-head"><h2>Your data</h2></div>
@@ -1718,6 +2104,7 @@
       e.preventDefault();
       const fd = new FormData(e.target);
       state.profile = {
+        ...state.profile,
         name: fd.get('name').trim().slice(0, 40),
         testDate: fd.get('testDate'),
         targetScore: Math.min(1600, Math.max(400, Number(fd.get('targetScore')) || 1400)),
@@ -1725,6 +2112,35 @@
       };
       save();
       $('#saved', el).textContent = 'Saved.';
+    });
+
+    const score = v => {
+      const n = Number(v);
+      return n >= 200 && n <= 800 ? Math.round(n / 10) * 10 : null;
+    };
+    $('#report', el).addEventListener('submit', e => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const bands = {};
+      for (const d of ALL_DOMAINS) {
+        const m = String(fd.get('band:' + d) || '').match(/(\d{3})(?:\s*(?:-|–|to)\s*(\d{3}))?/);
+        if (!m) continue;
+        const lo = score(m[1]), hi = score(m[2] || m[1]);
+        if (lo && hi) bands[d] = [Math.min(lo, hi), Math.max(lo, hi)];
+      }
+      const rw = score(fd.get('rw')), math = score(fd.get('math'));
+      const t = Number(fd.get('total'));
+      const total = t >= 400 && t <= 1600 ? Math.round(t / 10) * 10 : (rw && math ? rw + math : null);
+      state.profile.report = total || rw || math || Object.keys(bands).length ? { total, rw, math, bands } : null;
+      save();
+      const ab = abilities();
+      const focus = ALL_DOMAINS.slice().sort((a, b) => need(b, ab) - need(a, ab)).slice(0, 3);
+      $('#report-saved', el).textContent = state.profile.report ? `Saved. Study will focus most on ${focus.join(', ')}.` : 'Cleared.';
+    });
+    $('#report-clear', el).addEventListener('click', () => {
+      state.profile.report = null;
+      save();
+      render();
     });
 
     $('#export', el).addEventListener('click', () => {
@@ -1764,7 +2180,7 @@
 
   // ---------- Router & shell ----------
 
-  const routes = { home, adaptive, practice, review, exams, vocab, diagnostics, schedule, settings };
+  const routes = { home, testday, adaptive, practice, review, exams, vocab, diagnostics, schedule, settings };
   const app = $('#app');
   const main = $('#main');
   let cleanup = null;
