@@ -128,6 +128,96 @@
   const PATTERN = Object.fromEntries(PATTERNS.map(p => [p.id, p]));
   // AI questions carry their pattern; built-in ones get the most common pattern of their skill.
   const patternOf = q => q.pattern || PATTERNS.find(p => p.skill === q.skill)?.id || null;
+
+  // For each pattern: the shortcut that finds the answer fast (tip), the fastest Desmos
+  // route for math (desmos, with what to type in backticks), and the classic wrong answer (trap).
+  const TRICKS = {
+    'wic': { tip: 'Cover the choices, find the clue (a contrast word or a restatement after a colon), and say your own word for the blank first.', trap: 'A word that fits the topic but not the logic, or one stronger than the passage supports.' },
+    'purpose': { tip: 'Name what the author is doing with one verb (argues, describes, explains, compares, challenges), then match it.', trap: 'A choice that is true of one part of the text but not the whole.' },
+    'crosstext': { tip: 'Find what Text 2 says about the exact claim in Text 1, then predict the response before reading the choices.', trap: 'A choice where Text 2 agrees or disagrees more strongly than it actually does.' },
+    'central': { tip: 'The main idea usually sits after a turn word ("but", "however", "yet") or in the last sentence.', trap: 'A true detail dressed up as the main idea.' },
+    'evidence-text': { tip: 'Turn the claim into a prediction ("if this is true, we should see…"). The right finding matches that prediction exactly.', trap: 'A finding about the right topic that does not actually test the claim.' },
+    'evidence-quant': { tip: 'Check every number in a choice against the table first, then ask whether it supports this specific claim.', trap: 'Accurate data that supports a different claim.' },
+    'inference': { tip: 'Pick the most limited statement the passage forces you to accept.', trap: 'Extreme words such as "always", "proves" or "all".' },
+    'b-clauses': { tip: 'A semicolon works exactly like a period. Two full sentences need one of them, or a comma plus and/but/so.', trap: 'A comma splice that sounds fine read aloud.' },
+    'b-supplement': { tip: 'Match the opener: an interruption that starts with a dash ends with a dash; one that starts with a comma ends with a comma.', trap: 'A choice mixing a comma and a dash around the same phrase.' },
+    'b-colon': { tip: 'Cover everything after the colon: what is left must be a complete sentence.', trap: 'A colon right after "such as", "including" or a verb.' },
+    'b-none': { tip: 'No punctuation between a subject and its verb, a verb and its object, or a title and a name ("author Toni Morrison").', trap: 'An extra comma that feels like a pause.' },
+    'f-agree': { tip: 'Cross out "of …" and other prepositional phrases, then match the verb to the real subject.', trap: 'A verb that matches the nearest noun instead of the subject.' },
+    'f-pronoun': { tip: 'Find the noun the pronoun replaces. Company, team, group and committee are singular, so they take "its".', trap: '"Their" for a singular noun, or "it\'s" (it is) for "its".' },
+    'f-verb': { tip: 'Every sentence needs one main verb, and -ing or "to" forms are not main verbs. Match tense to time words like "since" or "last year".', trap: 'An -ing choice that leaves the sentence without a main verb.' },
+    'f-possessive': { tip: 'Ask whether the word owns the next word. Plural owners take s\', single owners \'s, plain plurals take no apostrophe.', trap: '"It\'s" or an apostrophe on a plain plural.' },
+    'f-modifier': { tip: 'Whoever is doing the opening phrase\'s action must come right after the comma.', trap: 'A passive choice that puts the wrong noun first.' },
+    't-contrast': { tip: 'Say "but" between the two sentences. If it fits, pick the contrast word (However, Nevertheless, In contrast).', trap: 'A cause or addition word when the ideas pull against each other.' },
+    't-cause': { tip: 'Say "so" between the sentences. If the second follows from the first, pick Therefore, As a result or Consequently.', trap: 'A contrast word when both ideas point the same way.' },
+    't-example': { tip: 'If the second sentence is one specific case of the first sentence\'s general claim, it is "For example".', trap: '"In addition" when the sentence is really an instance.' },
+    't-addition': { tip: 'Say "also". If it fits and the sentence adds a new point in the same direction, pick Moreover or Additionally.', trap: '"For example" when the sentence is a new point, not an instance.' },
+    't-other': { tip: 'Similarity mirrors the first idea (Similarly). Sequence follows time (Later, Finally). Concession admits a point, then pushes back (Granted, Still).', trap: 'Two choices that mean the same thing: neither can be the answer.' },
+    'synthesis': { tip: 'Skip the notes. Read the goal, then cross out every choice that does not do exactly that goal.', trap: 'The choice packed with the most facts but aimed at a different goal.' },
+    'lin-model': { tip: 'Units tell you the meaning: the number multiplied by x is "per x", and the constant is the starting amount.', desmos: 'Put two given points in a table and type `y_1~mx_1+b` to get the slope and intercept.' },
+    'lin-lines': { tip: 'Rewrite in y = mx + b to read the slope. Perpendicular slopes are negative reciprocals.', desmos: 'Graph the line and click its intercepts. Type a candidate line to see whether it runs parallel or crosses at a right angle.' },
+    'lin-eq': { tip: 'Same x-coefficient on both sides: same constant means infinitely many solutions, different constant means none.', desmos: 'Type `y=(left side)-(right side)`. One crossing is the solution; a flat line off the axis means no solution; a line on the axis means infinitely many.' },
+    'ineq': { tip: 'Translate the words first: "at least" is ≥, "no more than" is ≤. Then test a choice with real numbers.', desmos: 'Type the inequality to shade the region, then type each answer point like `(2,9)` to see which falls inside.' },
+    'systems': { tip: 'Elimination is usually faster than substitution. If they ask for x + y, add or subtract the equations directly.', desmos: 'Type both equations and click the point where they cross.' },
+    'exp': { tip: 'The growth factor is 1 + rate. "Doubles every 3 hours" means 2 to the power t/3.', desmos: 'Rename t to x, graph the model, and click the curve at the x value you need. For data, use `y_1~ab^(x_1)`.' },
+    'quad-func': { tip: 'Vertex form gives the vertex, factored form the x-intercepts, standard form the y-intercept.', desmos: 'Graph it and click the curve: Desmos marks the vertex, the zeros and the y-intercept.' },
+    'expr': { tip: 'Pick a number for x (avoid 0 and 1), evaluate the original, and keep the choice that gives the same value.', desmos: 'Graph the original and each choice. The equivalent one lands exactly on top of it.' },
+    'quad-eq': { tip: 'Sum of roots is −b/a and product is c/a, so you often never need to solve.', desmos: 'Type `y=` the quadratic and click the zeros. For "exactly one solution", put a slider on the constant.' },
+    'func': { tip: 'f(x − h) moves the graph right h; f(x) + k moves it up k.', desmos: 'Define `f(x)=…`, then type `f(3)`, or graph `f(x-2)` next to `f(x)`.' },
+    'extraneous': { tip: 'Always plug answers back into the original equation.', desmos: 'Type `y=(left side)-(right side)`. Only real solutions cross the x-axis, so extraneous ones never show up.' },
+    'percent': { tip: 'Turn changes into factors and multiply: up 20% is ×1.2, down 20% is ×0.8.', desmos: 'Type the chain of factors, like `100*1.2*0.8`, and read off the net change.' },
+    'ratio': { tip: 'Write every rate as a fraction with units and cancel units until only the ones you want remain.', desmos: 'Type the whole conversion at once, like `60*5280/3600`.' },
+    'one-var': { tip: 'Outliers drag the mean but barely move the median. More spread-out data has a larger standard deviation.', desmos: 'Type `mean([4,8,10])`, `median([…])` or `stdev([…])`.' },
+    'two-var': { tip: 'The slope of a best-fit line is the predicted change per unit; the intercept is the predicted value at 0.', desmos: 'Enter the points in a table and type `y_1~mx_1+b`.' },
+    'prob': { tip: 'Find the "given" group first: it is the denominator.' },
+    'sampling': { tip: 'Sample proportion × population size gives the estimate. A margin of error describes the population value, not individuals.' },
+    'inference-stats': { tip: 'Random assignment lets you claim cause. A random sample lets you generalize, but only to the population sampled.' },
+    'area': { tip: 'Scaling lengths by k multiplies area by k² and volume by k³.', desmos: 'Use Desmos as a calculator: `pi*3^2*8`.' },
+    'triangles': { tip: 'Parallel lines make equal corresponding and alternate angles; similar triangles have equal side ratios.' },
+    'trig': { tip: 'sin x° = cos(90 − x)°, and know 30-60-90 and 45-45-90 side ratios.', desmos: 'Switch Desmos to degrees with the wrench icon before typing `sin(30)`.' },
+    'circles': { tip: 'Complete the square: add (half the x-coefficient)² and (half the y-coefficient)² to both sides.', desmos: 'Graph the equation as given to check the center and radius you found.' }
+  };
+  for (const p of PATTERNS) Object.assign(p, TRICKS[p.id] || {});
+
+  // The Desmos moves that save the most time, each with a worked example.
+  const DESMOS_TRICKS = [
+    { id: 'zeros', title: 'Solve any equation in one line', when: ['lin-eq', 'quad-eq', 'extraneous'],
+      steps: 'Move everything to one side and type it as y. The x-values where the graph crosses the x-axis are the solutions. Click the gray points to read them.',
+      example: { q: '\\(\\sqrt{3x + 4} = x\\). What is the solution?', type: 'y=sqrt(3x+4)-x', result: 'Only one crossing, at x = 4. The extraneous solution x = −1 never shows up.' } },
+    { id: 'intersect', title: 'Systems: click the crossing', when: ['systems', 'lin-lines'],
+      steps: 'Type each equation on its own line. Click where the graphs cross to read the solution. No crossing means no solution; lines on top of each other mean infinitely many.',
+      example: { q: '\\(2x + 3y = 12\\) and \\(x - y = 1\\). What is \\((x, y)\\)?', type: '2x+3y=12', type2: 'x-y=1', result: 'They cross at (3, 2).' } },
+    { id: 'quad', title: 'Quadratic features for free', when: ['quad-func', 'quad-eq'],
+      steps: 'Graph the quadratic and click the curve. Desmos marks the vertex, the zeros and the y-intercept as gray points.',
+      example: { q: 'What is the minimum value of \\(y = x^2 - 6x + 5\\)?', type: 'y=x^2-6x+5', result: 'The vertex is (3, −4), so the minimum is −4. The zeros are 1 and 5.' } },
+    { id: 'slider', title: 'Find a constant with a slider', when: ['quad-eq', 'systems', 'lin-eq'],
+      steps: 'Type the equation with the unknown constant. Desmos offers to add a slider; drag it until the condition holds, then type each answer choice (like c=9) to confirm.',
+      example: { q: 'For what value of \\(c\\) does \\(y = x^2 - 6x + c\\) touch the x-axis at exactly one point?', type: 'y=x^2-6x+c', result: 'At c = 9 the vertex sits on the x-axis.' } },
+    { id: 'count', title: 'Count solutions by counting crossings', when: ['extraneous', 'quad-eq', 'systems'],
+      steps: 'Graph each side of the equation as its own y. The number of crossings is the number of real solutions.',
+      example: { q: 'How many real solutions does \\(x^2 = 2x - 1\\) have?', type: 'y=x^2', type2: 'y=2x-1', result: 'The line just touches the parabola once, at x = 1: one solution.' } },
+    { id: 'equiv', title: 'Equivalent expressions: look for the overlap', when: ['expr'],
+      steps: 'Graph the original expression, then each choice. The equivalent one lands exactly on top of the original.',
+      example: { q: 'Which is equivalent to \\(\\frac{x^2 - 25}{x + 5}\\)?', type: 'y=(x^2-25)/(x+5)', type2: 'y=x-5', result: 'The two graphs overlap completely, so x − 5 is the answer.' } },
+    { id: 'rename', title: 'Rename variables to x', when: ['exp', 'func', 'lin-model'],
+      steps: 'Desmos graphs y against x and turns any other letter into a slider. Rewrite t, n or m as x, graph, and click the curve at the value you need.',
+      example: { q: '\\(P(t) = 500(2)^{\\frac{t}{3}}\\). What is \\(P(9)\\)?', type: 'y=500*2^(x/3)', result: 'At x = 9, y = 4,000.' } },
+    { id: 'regress', title: 'Fit data with a regression', when: ['two-var', 'lin-model', 'exp'],
+      steps: 'Add a table and enter the points as x₁ and y₁. Type y_1~mx_1+b for a line or y_1~ab^(x_1) for exponential. Desmos reports the values.',
+      example: { q: 'A table shows (0, 3), (1, 6), (2, 12). Which exponential model fits?', type: 'y_1~ab^(x_1)', result: 'a = 3 and b = 2, so y = 3(2)ˣ.' } },
+    { id: 'stats', title: 'Mean, median and spread instantly', when: ['one-var'],
+      steps: 'Type a list in square brackets inside mean, median or stdev.',
+      example: { q: 'What is the mean of 4, 8, 10, 14 and 19?', type: 'mean([4,8,10,14,19])', result: '11.' } },
+    { id: 'shade', title: 'Inequalities: shade and test points', when: ['ineq'],
+      steps: 'Type the inequality to shade its region. Type each answer choice as a point and see which lands in the shading.',
+      example: { q: 'Which point satisfies \\(y > 2x + 3\\)?', type: 'y>2x+3', type2: '(1,6)', result: '(1, 6) sits in the shaded region, since 6 > 5.' } },
+    { id: 'functions', title: 'Function notation without algebra', when: ['func'],
+      steps: 'Define the function once, then evaluate it or graph shifted versions next to it.',
+      example: { q: '\\(f(x) = x^2 - 3x + 2\\). What is \\(f(4)\\)?', type: 'f(x)=x^2-3x+2', type2: 'f(4)', result: '6.' } },
+    { id: 'degrees', title: 'Trig: switch to degrees first', when: ['trig'],
+      steps: 'Desmos starts in radians. Open the wrench icon and choose Degrees before typing sin, cos or tan of an angle in degrees.',
+      example: { q: 'What is \\(\\sin 30^\\circ\\)?', type: 'sin(30)', result: '0.5 once Desmos is in degrees.' } }
+  ];
   const SECTION_OF = Object.fromEntries(ALL_DOMAINS.map(d => [d, DOMAINS.rw.includes(d) ? 'rw' : 'math']));
   const DIFF = { easy: -1, medium: 0, hard: 1 };
   const WEIGHT = { easy: 1, medium: 1.5, hard: 2 };
@@ -206,6 +296,11 @@
     }
     return out + esc(s.slice(last));
   }
+  // Text where `backticked` parts are Desmos input: shown as code with a Copy button.
+  const codeText = text => String(text ?? '').split('`').map((part, i) => i % 2
+    ? `<code class="dz">${esc(part)}</code><button class="copy" type="button" data-copy="${esc(part)}" aria-label="Copy ${esc(part)}">Copy</button>`
+    : rich(part)).join('');
+
   // Rough plain-text version of a formula, for short previews.
   const plainTex = t => t
     .replace(/\\(?:begin|end)\{[a-z*]+\}/gi, ' ').replace(/\\\\/g, ', ').replace(/&/g, '')
@@ -541,8 +636,8 @@
     const section = SECTION_OF[t.domain];
     const examples = t.ref ? [] : shuffle(BANK.filter(q => q.skill === t.skill)).slice(0, 2).map(q => JSON.stringify(compactQ(q)));
     const shape = format === 'spr'
-      ? '{"topic": "2–5 word topic label", "passage": "" or text, "table": null or {"caption": "...", "head": ["..."], "rows": [["..."]]}, "prompt": "...", "solution": "your full step-by-step solution", "type": "spr", "accept": ["the answer as a number, e.g. 7.5", "any equivalent form, e.g. 15/2"], "explanation": "1–3 sentences"}'
-      : '{"topic": "2–5 word topic label", "passage": "" or text, "table": null or {"caption": "...", "head": ["..."], "rows": [["..."]]}, "prompt": "...", "solution": "your full step-by-step solution", "choices": ["...", "...", "...", "..."], "answer": index 0-3 of the correct choice, "why": ["one sentence on why the first choice is right or wrong", "... second", "... third", "... fourth"], "explanation": "1–3 sentences on the key idea and the main trap"}';
+      ? '{"topic": "2–5 word topic label", "passage": "" or text, "table": null or {"caption": "...", "head": ["..."], "rows": [["..."]]}, "prompt": "...", "solution": "your full step-by-step solution", "type": "spr", "accept": ["the answer as a number, e.g. 7.5", "any equivalent form, e.g. 15/2"], "explanation": "1–3 sentences", "desmos": "the fastest way to solve this exact question in the Desmos calculator: what to type, inside backticks like \`y=x^2-4\`, and what to click; empty string if Desmos does not help"}'
+      : '{"topic": "2–5 word topic label", "passage": "" or text, "table": null or {"caption": "...", "head": ["..."], "rows": [["..."]]}, "prompt": "...", "solution": "your full step-by-step solution", "choices": ["...", "...", "...", "..."], "answer": index 0-3 of the correct choice, "why": ["one sentence on why the first choice is right or wrong", "... second", "... third", "... fourth"], "explanation": "1–3 sentences on the key idea and the main trap", "desmos": "math only: the fastest way to solve this exact question in the Desmos calculator, with what to type inside backticks like \`y=x^2-4\` and what to click; empty string if Desmos does not help or for Reading and Writing", "shortcut": "Reading and Writing only: the one-sentence pattern shortcut that finds the answer fast; empty string for math"}';
     return [
       `Write ONE question for the digital SAT, ${SECTIONS[section]} section, exactly as it would appear on the real test.`,
       `Domain: ${t.domain}`,
@@ -654,7 +749,9 @@
       source: 'ai', section, domain: t.domain, skill: t.skill, pattern: t.pattern || null, difficulty: t.difficulty || 'medium',
       passage, prompt, explanation,
       topic: str(r.topic, 80) || t.skill,
-      solution: typeof r.solution === 'string' ? r.solution.trim().slice(0, 3000) : ''
+      solution: typeof r.solution === 'string' ? r.solution.trim().slice(0, 3000) : '',
+      desmos: section === 'math' && typeof r.desmos === 'string' && r.desmos.trim().length > 8 ? r.desmos.trim().slice(0, 600) : '',
+      shortcut: section === 'rw' && typeof r.shortcut === 'string' && r.shortcut.trim().length > 8 ? r.shortcut.trim().slice(0, 400) : ''
     };
     const tb = r.table;
     if (tb && Array.isArray(tb.head) && Array.isArray(tb.rows) && tb.head.length && tb.rows.length && tb.rows.length <= 12 &&
@@ -780,7 +877,16 @@
     if (st.revealed) {
       const ok = isCorrect(q, st.resp);
       const ans = q.type === 'spr' && !ok ? `The answer is ${esc(q.accept[0])}. ` : '';
-      fb = `<div class="feedback ${ok ? 'ok' : 'bad'}"><strong>${ok ? 'Correct.' : answered(st.resp) ? 'Not quite.' : 'Not answered.'}</strong> ${ans}${rich(q.explanation)}</div>` +
+      const pat = PATTERN[patternOf(q)];
+      const desmos = q.section === 'math' ? (q.desmos || pat?.desmos) : null;
+      const tip = q.section === 'rw' ? (q.shortcut || pat?.tip) : pat?.tip;
+      const trick = pat || desmos ? `<div class="trick">
+          <div class="trick-head">${pat ? `Pattern: ${esc(pat.label.replace(' (est.)', ''))}` : 'Faster way'}${pat ? `<a class="small" href="#/practice?pattern=${pat.id}">Drill this pattern</a>` : ''}</div>
+          ${tip ? `<p><strong>Shortcut:</strong> ${codeText(tip)}</p>` : ''}
+          ${desmos ? `<p><strong>Desmos:</strong> ${codeText(desmos)}</p>` : ''}
+          ${pat?.trap ? `<p><strong>Trap:</strong> ${codeText(pat.trap)}</p>` : ''}
+        </div>` : '';
+      fb = `<div class="feedback ${ok ? 'ok' : 'bad'}"><strong>${ok ? 'Correct.' : answered(st.resp) ? 'Not quite.' : 'Not answered.'}</strong> ${ans}${rich(q.explanation)}</div>` + trick +
         (q.solution ? `<details class="solution"><summary>Full worked solution</summary><div>${rich(q.solution)}</div></details>` : '');
     }
     const stem = `<div class="prompt">${rich(q.prompt)}</div>`;
@@ -1331,10 +1437,15 @@
       section: params.get('section') || 'all',
       domain: params.get('domain') || 'all',
       skill: params.get('skill') || 'all',
+      pattern: PATTERN[params.get('pattern')] ? params.get('pattern') : 'all',
+      desmos: params.get('desmos') === 'yes' ? 'yes' : 'all',
       difficulty: params.get('difficulty') || 'all',
       mode: params.get('mode') || 'all'
     };
+    if (f.pattern !== 'all') Object.assign(f, { domain: PATTERN[f.pattern].domain, skill: PATTERN[f.pattern].skill });
+    if (f.desmos === 'yes') f.section = 'math';
     if (f.domain !== 'all') f.section = SECTION_OF[f.domain];
+    const patternOk = p => (f.skill === 'all' || p.skill === f.skill) && (f.pattern === 'all' || p.id === f.pattern) && (f.desmos === 'all' || !!p.desmos);
 
     const seen = new Set();
     const session = { n: 0, ok: 0 };
@@ -1348,6 +1459,7 @@
         (f.section === 'all' || q.section === f.section) &&
         (f.domain === 'all' || q.domain === f.domain) &&
         (f.skill === 'all' || q.skill === f.skill) &&
+        (f.pattern === 'all' && f.desmos === 'all' || (PATTERN[patternOf(q)] && patternOk(PATTERN[patternOf(q)]))) &&
         (f.difficulty === 'all' || q.difficulty === f.difficulty) &&
         (f.mode === 'all' ||
           (f.mode === 'new' && !(q.id in last)) ||
@@ -1358,7 +1470,7 @@
     function aiTarget() {
       const ab = abilities();
       const domains = f.domain !== 'all' ? [f.domain] : f.section === 'all' ? ALL_DOMAINS : DOMAINS[f.section];
-      const p = pickPattern(domains, p => f.skill === 'all' || p.skill === f.skill, ab) || pickPattern(domains, () => true, ab) || PATTERNS[0];
+      const p = pickPattern(domains, patternOk, ab) || pickPattern(domains, () => true, ab) || PATTERNS[0];
       return { domain: p.domain, skill: p.skill, pattern: p.id, difficulty: f.difficulty !== 'all' ? f.difficulty : pickLevel(ab[p.domain] + stretch()) };
     }
 
@@ -1437,6 +1549,8 @@
           <select class="input" data-f="section" aria-label="Section">${opt('all', 'All sections', f.section)}${opt('rw', SECTIONS.rw, f.section)}${opt('math', SECTIONS.math, f.section)}</select>
           <select class="input" data-f="domain" aria-label="Domain">${opt('all', 'All domains', f.domain)}${domains.map(d => opt(d, d, f.domain)).join('')}</select>
           ${f.domain !== 'all' ? `<select class="input" data-f="skill" aria-label="Skill">${opt('all', 'All skills', f.skill)}${SKILLS[f.domain].map(k => opt(k, k, f.skill)).join('')}</select>` : ''}
+          ${f.skill !== 'all' && PATTERNS.filter(x => x.skill === f.skill).length > 1 ? `<select class="input" data-f="pattern" aria-label="Pattern">${opt('all', 'All patterns', f.pattern)}${PATTERNS.filter(x => x.skill === f.skill).map(x => opt(x.id, x.label.replace(' (est.)', ''), f.pattern)).join('')}</select>` : ''}
+          ${f.section !== 'rw' ? `<select class="input" data-f="desmos" aria-label="Desmos">${opt('all', 'Any math question', f.desmos)}${opt('yes', 'Desmos-friendly only', f.desmos)}</select>` : ''}
           <select class="input" data-f="difficulty" aria-label="Difficulty">${opt('all', useAI ? (module2() ? 'Module 2 level' : 'Match my level') : 'Any difficulty', f.difficulty)}${opt('easy', 'Easy', f.difficulty)}${opt('medium', 'Medium', f.difficulty)}${opt('hard', 'Hard', f.difficulty)}</select>
           ${useAI ? '' : `<select class="input" data-f="mode" aria-label="Which questions">${opt('all', 'All questions', f.mode)}${opt('new', 'Not yet answered', f.mode)}${opt('missed', 'Last answer wrong', f.mode)}${opt('flagged', 'Flagged for review', f.mode)}</select>`}
         </div>
@@ -1448,8 +1562,10 @@
       const k = e.target.dataset.f;
       if (!k) return;
       f[k] = e.target.value;
-      if (k === 'section') { f.domain = 'all'; f.skill = 'all'; }
-      if (k === 'domain') f.skill = 'all';
+      if (k === 'section') { f.domain = 'all'; f.skill = 'all'; f.pattern = 'all'; if (f.section === 'rw') f.desmos = 'all'; }
+      if (k === 'domain') { f.skill = 'all'; f.pattern = 'all'; }
+      if (k === 'skill') f.pattern = 'all';
+      if (k === 'desmos' && f.desmos === 'yes' && f.section === 'all') f.section = 'math';
       note = '';
       reset();
     });
@@ -1471,7 +1587,7 @@
         note = 'Thanks. This question won\'t count toward your stats.';
         draw();
       }
-      if (act === 'clear') { Object.assign(f, { section: 'all', domain: 'all', skill: 'all', difficulty: 'all', mode: 'all' }); reset(); }
+      if (act === 'clear') { Object.assign(f, { section: 'all', domain: 'all', skill: 'all', pattern: 'all', desmos: 'all', difficulty: 'all', mode: 'all' }); reset(); }
     });
 
     function check() {
@@ -1734,12 +1850,13 @@
         { id: 'final25', title: 'Final review: 25 questions', sub: `The question patterns that come up most on recent tests, weighted toward ${focus.join(', ')}${module2() ? ', at module 2 level' : ''}.`, href: '#/adaptive?start=final&n=25', go: 'Start' },
         { id: 'mistakes', title: 'Go through your mistakes', sub: due ? `${plural(due, 'mistake')} due. Read each explanation, then retry it.` : 'Read the explanation for each one, then retry it.', href: due ? '#/adaptive?start=review' : '#/review', go: 'Open' },
         ...focus.map((d, i) => ({ id: 'drill' + i, title: `Drill ${d}: 10 questions`, sub: i === 0 ? 'Your biggest gap to your target score.' : 'One of your three weakest areas.', href: practiceLink(d), go: 'Drill' })),
+        { id: 'desmos', title: 'Desmos drill: 10 questions', sub: 'Math questions where Desmos is fastest. After each one you see the exact keystrokes.', href: '#/practice?desmos=yes', go: 'Drill' },
         { id: 'pace', title: 'Time one module', sub: 'Mock exams, Full module: get a feel for about 71 seconds per Reading and Writing question and 95 per Math question.', href: '#/exams', go: 'Open' },
         { id: 'bluebook', title: 'Finish exam setup in Bluebook', sub: 'Update Bluebook on the device you will test on and complete exam setup, which gives you your admission ticket.', href: 'https://bluebook.collegeboard.org', go: 'Bluebook', external: true }
       ] },
       { when: 1, title: 'The day before', items: [
         { id: 'final15', title: 'Light review: 15 questions', sub: `Mostly the patterns that repeat most: transitions, words in context, linear and exponential functions${module2() ? ', at module 2 level' : ''}. Nothing new.`, href: '#/adaptive?start=final&n=15', go: 'Start' },
-        { id: 'rules', title: 'Read the rules sheet below', sub: 'About 10 minutes. These rules decide most Standard English Conventions and Advanced Math questions.' },
+        { id: 'rules', title: 'Read the rules sheet below and skim Strategies', sub: 'About 15 minutes. The rules decide most Standard English Conventions and Advanced Math questions; Strategies has every Desmos trick and pattern shortcut.', href: '#/tricks', go: 'Strategies' },
         { id: 'pack', title: 'Pack tonight', sub: 'Admission ticket, photo ID, your device fully charged and its charger, pencils or pens for scratch work, water and a snack for the break.' },
         { id: 'sleep', title: 'Stop by early evening and sleep 8 or more hours', sub: 'A rested brain is worth more than one more practice set.' }
       ] },
@@ -1834,39 +1951,10 @@
         </section>
       </div>
 
-      <div class="grid two">
-        <section class="card rules">
-          <div class="card-head"><h2>Desmos tricks</h2><span class="small muted">The calculator built into Bluebook</span></div>
-          <ul class="tips">
-            <li><strong>Solve any equation by typing it as written</strong>, like <code>3(x-2)=2x+7</code>. Desmos draws a vertical line at each solution; click it to read the value.</li>
-            <li><strong>Systems:</strong> type both equations and click where they cross. No crossing means no solution; one line on top of the other means infinitely many.</li>
-            <li><strong>Quadratics:</strong> graph <code>y=x^2-6x+5</code> and click the gray points for the vertex, the x-intercepts and the y-intercept. The vertex is the maximum or minimum.</li>
-            <li><strong>"For what value of k" questions:</strong> type the equation with <code>k</code> and add the slider Desmos offers. Drag until the condition holds (the graphs touch once, the lines become parallel), then check the choices.</li>
-            <li><strong>Equivalent expressions:</strong> graph the original and each choice. The one that lands exactly on top of it is equivalent.</li>
-            <li><strong>Functions:</strong> define <code>f(x)=x^2-3x+2</code>, then type <code>f(4)</code> or <code>f(x+2)</code>.</li>
-            <li><strong>Data:</strong> <code>mean([4,8,10,14,19])</code> and <code>median([...])</code> work. For a table of points, add a table and type <code>y_1~mx_1+b</code> for the best-fit line, or <code>y_1~ab^(x_1)</code> for exponential.</li>
-            <li><strong>Inequalities:</strong> type <code>y&gt;2x+3</code> to shade the region, then type a point like <code>(2,9)</code> to see if it falls inside.</li>
-            <li><strong>Circles:</strong> type the equation as given, even an unsimplified one like <code>x^2+y^2-8x+6y=11</code>, and read the center and radius off the graph.</li>
-            <li><strong>Grid-ins:</strong> a long decimal is fine if it fills the space, like <code>.6667</code> for two thirds.</li>
-          </ul>
-        </section>
-        <section class="card rules">
-          <div class="card-head"><h2>Reading and Writing patterns</h2><span class="small muted">Shortcuts that hold up again and again</span></div>
-          <ul class="tips">
-            <li><strong>Two choices that mean the same thing can't both be right,</strong> so both are out. This settles many transition and words in context questions.</li>
-            <li><strong>A period and a semicolon do the same job.</strong> If two choices put them in the same spot with the same words, the answer is a third choice.</li>
-            <li><strong>Match the opener:</strong> an interruption that starts with a dash ends with a dash; one that starts with a comma ends with a comma.</li>
-            <li><strong>Cross out "of …" phrases</strong> to find the real subject before choosing a verb.</li>
-            <li><strong>Notes questions:</strong> skip the notes. Read the goal, then pick the choice that does exactly that goal. "Emphasize a similarity" needs both things and a word like "both" or "similarly".</li>
-            <li><strong>Transitions:</strong> cover the choices and say the link in plain words (but, so, for example, also), then find its match.</li>
-            <li><strong>Words in context:</strong> put your own word in the blank before reading the choices, then take the closest one. Skip words stronger than the passage supports.</li>
-            <li><strong>Completions and inferences:</strong> the safest claim that the evidence fully supports wins. "Always", "proves" and "all" are usually traps.</li>
-            <li><strong>Main idea and purpose:</strong> wrong choices often reuse the passage's exact words to say something it didn't.</li>
-            <li><strong>Data questions:</strong> first cross out choices that misread the table, then pick the one that supports the specific claim.</li>
-            <li><strong>Bank time:</strong> grammar, transitions and notes questions come in the second half of each module and are the fastest. You can jump to them with the question navigator, then return.</li>
-          </ul>
-        </section>
-      </div>
+      <section class="card due-card desmos-cta">
+        <span><strong>Desmos tricks and pattern shortcuts.</strong> ${DESMOS_TRICKS.length} Desmos moves with worked examples, plus the shortcut and trap for all ${PATTERNS.length} question patterns.</span>
+        <a class="btn primary" href="#/tricks">Open Strategies</a>
+      </section>
 
       <section class="card">
         <div class="card-head"><h2>What comes up most</h2><span class="small muted">From The Test Advantage's analysis of 2024–2026 question banks</span></div>
@@ -1891,6 +1979,64 @@
     el.addEventListener('click', e => {
       const b = e.target.closest('[data-date]');
       if (b) { p.testDate = b.dataset.date; save(); render(); }
+    });
+  }
+
+  // Desmos tricks and every question pattern's shortcut and trap, each with a drill.
+  function tricks(el) {
+    const drill = p => `<a class="btn sm" href="#/practice?pattern=${p}">Drill</a>`;
+    const typeBox = t => `<span class="typed"><code class="dz">${esc(t)}</code><button class="copy" type="button" data-copy="${esc(t)}" aria-label="Copy ${esc(t)}">Copy</button></span>`;
+    const card = t => `<article class="card trick-card" id="dz-${t.id}">
+        <h3>${esc(t.title)}</h3>
+        <p class="small muted">Cracks: ${t.when.map(id => `<a href="#/practice?pattern=${id}">${esc(PATTERN[id].label.replace(' (est.)', ''))}</a>`).join(', ')}</p>
+        <p>${esc(t.steps)}</p>
+        <div class="worked">
+          <div class="small muted">Example</div>
+          <div class="worked-q">${rich(t.example.q)}</div>
+          <div class="row">Type ${typeBox(t.example.type)}${t.example.type2 ? ` and ${typeBox(t.example.type2)}` : ''}</div>
+          <div class="worked-a">${rich(t.example.result)}</div>
+        </div>
+        <div class="q-actions"><a class="btn sm primary" href="#/practice?pattern=${t.when[0]}">Drill ${esc(PATTERN[t.when[0]].label.replace(' (est.)', '').toLowerCase())}</a></div>
+      </article>`;
+    const patternRow = x => `<li class="pattern">
+        <div class="pattern-head"><strong>${esc(x.label.replace(' (est.)', ''))}</strong>
+          <span class="small muted">${x.share}% of the section${x.repeat ? `, repeats ${Math.round(x.repeat * 100)}%` : ''}${x.hard ? `, ${Math.round(x.hard * 100)}% hard` : ''}</span>
+          <span class="spacer"></span>${drill(x.id)}</div>
+        ${x.tip ? `<p><strong>Shortcut:</strong> ${codeText(x.tip)}</p>` : ''}
+        ${x.desmos ? `<p><strong>Desmos:</strong> ${codeText(x.desmos)}</p>` : ''}
+        ${x.trap ? `<p><strong>Trap:</strong> ${codeText(x.trap)}</p>` : ''}
+      </li>`;
+    const group = sec => DOMAINS[sec].map(d => `<section class="card">
+        <div class="card-head"><h3>${esc(d)}</h3><a class="small" href="#/practice?domain=${encodeURIComponent(d)}">Practice all</a></div>
+        <ul class="patterns">${PATTERNS.filter(x => x.domain === d).sort((a, b) => b.share * (1 + (b.repeat ?? 0.28)) - a.share * (1 + (a.repeat ?? 0.28))).map(patternRow).join('')}</ul>
+      </section>`).join('');
+
+    el.innerHTML = `
+      <div class="page-head"><div><h1>Strategies</h1><p>Desmos moves that turn hard math into a few keystrokes, and the shortcut and trap for every question pattern on the test. Every one has a drill.</p></div>
+        <div class="row"><a class="btn" href="#" data-jump="desmos">Desmos</a><a class="btn" href="#" data-jump="math">Math patterns</a><a class="btn" href="#" data-jump="rw">Reading and Writing</a></div></div>
+
+      <section class="card due-card desmos-cta">
+        <span><strong>Desmos drill.</strong> Math questions where Desmos is the fastest route. After each one you see the exact keystrokes.</span>
+        <a class="btn primary" href="#/practice?desmos=yes">Start Desmos drill</a>
+      </section>
+
+      <h2 class="section-title" id="desmos">Desmos tricks</h2>
+      <p class="muted section-sub">Bluebook has Desmos built in for the whole Math section. Copy any input below and paste it into Desmos to try it.</p>
+      <div class="trick-grid">${DESMOS_TRICKS.map(card).join('')}</div>
+
+      <h2 class="section-title" id="math">Math patterns</h2>
+      <p class="muted section-sub">Sorted by how often each comes up. Exact repeats are rare in math, so the rule is what carries over.</p>
+      <div class="grid two">${group('math')}</div>
+
+      <h2 class="section-title" id="rw">Reading and Writing patterns</h2>
+      <p class="muted section-sub">Transitions and words in context repeat most often across test dates, well above the 28% average for English questions.</p>
+      <div class="grid two">${group('rw')}</div>`;
+
+    el.addEventListener('click', e => {
+      const j = e.target.closest('[data-jump]');
+      if (!j) return;
+      e.preventDefault();
+      document.getElementById(j.dataset.jump)?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
     });
   }
 
@@ -2180,7 +2326,7 @@
 
   // ---------- Router & shell ----------
 
-  const routes = { home, testday, adaptive, practice, review, exams, vocab, diagnostics, schedule, settings };
+  const routes = { home, testday, tricks, adaptive, practice, review, exams, vocab, diagnostics, schedule, settings };
   const app = $('#app');
   const main = $('#main');
   let cleanup = null;
@@ -2219,5 +2365,22 @@
     go(a.getAttribute('href'));
   });
   window.addEventListener('popstate', () => { route = location.hash; render(); });
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-copy]');
+    if (!b) return;
+    const text = b.dataset.copy;
+    const done = () => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); };
+    const select = () => {
+      const code = b.previousElementSibling;
+      if (!code) return;
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      b.textContent = 'Selected';
+    };
+    try { navigator.clipboard.writeText(text).then(done, select); } catch { select(); }
+  });
   render();
 })();
